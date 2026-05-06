@@ -1,0 +1,33 @@
+{
+  "name": "coral-frontend-workflow",
+  "id": "coral-frontend-workflow",
+  "owner": {
+    "name": "BBJI"
+  },
+  "metadata": {
+    "description": "Coral 前端全流程协作开发技能 — 从需求分析到测试交付的完整多角色协作工作流",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "coral-frontend-workflow",
+      "source": "./",
+      "description": "前端全流程协作开发技能，覆盖产品经理、UI/UX设计师、项目经理、开发工程师、测试工程师五大角色",
+      "version": "1.0.0",
+      "author": {
+        "name": "BBJI"
+      },
+      "keywords": [
+        "frontend",
+        "workflow",
+        "collaboration",
+        "project-management",
+        "requirements",
+        "testing",
+        "coral"
+      ],
+      "category": "development",
+      "strict": false
+    }
+  ]
+}

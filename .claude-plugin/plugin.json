@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "coral-frontend-workflow",
+  "version": "1.0.0",
+  "description": "前端全流程协作开发技能 — 从需求分析到测试交付的完整多角色协作工作流",
+  "author": {
+    "name": "BBJI"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/BBJI/coral-frontend-workflow",
+  "repository": "https://github.com/BBJI/coral-frontend-workflow.git",
+  "keywords": [
+    "frontend",
+    "workflow",
+    "collaboration",
+    "project-management",
+    "requirements",
+    "testing",
+    "coral"
+  ],
+  "category": "development",
+  "skills": [
+    "./.claude/skills/coral-workflow"
+  ]
+}

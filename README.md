@@ -8,7 +8,23 @@ Coral 前端全流程协作开发技能 — Claude Code Skill
 
 ## 安装
 
-将 `.claude/skills/coral-workflow/` 目录复制到你的项目的 `.claude/skills/` 目录下即可。
+### 一行命令安装（推荐）
+
+```bash
+# Bash / Git Bash
+git clone --depth 1 https://github.com/BBJI/coral-frontend-workflow.git /tmp/cfw && python /tmp/cfw/scripts/install.py && rm -rf /tmp/cfw
+
+# PowerShell
+git clone --depth 1 https://github.com/BBJI/coral-frontend-workflow.git $env:TEMP\cfw; python $env:TEMP\cfw\scripts\install.py; ri -r -fo $env:TEMP\cfw
+
+# CMD
+git clone --depth 1 https://github.com/BBJI/coral-frontend-workflow.git "%TEMP%\cfw" && python "%TEMP%\cfw\scripts\install.py" && rmdir /s /q "%TEMP%\cfw"
+
+# SSH
+git clone --depth 1 git@github.com:BBJI/coral-frontend-workflow.git /tmp/cfw && python /tmp/cfw/scripts/install.py && rm -rf /tmp/cfw
+```
+
+更多安装方式详见 [INSTALL.md](INSTALL.md)。
 
 ## 使用
 
