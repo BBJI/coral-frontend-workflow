@@ -1,0 +1,179 @@
+{
+  "skill_name": "coral-workflow",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我有一个已有的Vue3后台管理系统项目，现在需要加一个员工考勤管理模块，包括考勤打卡记录查看、请假申请、加班申请三个子功能。用户是HR和管理层，需要看到统计报表。请帮我从需求开始完整走一遍流程。",
+      "expected_output": "应触发coral-workflow技能，识别为模式B（已有项目迭代），依次完成：需求提问→PRD→原型→设计规范（结合现有UI风格）→逻辑流程图→疑问清单→技术方案→测试用例→任务拆分（多人并行）→交接coral-frontend开发→测试→回归测试→交付",
+      "files": [],
+      "assertions": [
+        {
+          "name": "identifies-existing-project-mode",
+          "description": "输出中明确识别为模式B（已有项目迭代），而非模式A（从0创建）",
+          "type": "contains",
+          "expected": "模式B 或 已有项目迭代"
+        },
+        {
+          "name": "asks-clarifying-questions-first",
+          "description": "在产出任何文档之前，先向用户提出澄清问题（业务目标、场景、边界等），而不是直接开始产出",
+          "type": "behavior",
+          "expected": "输出中包含需求澄清/提问环节，且出现在PRD或原型之前"
+        },
+        {
+          "name": "produces-prd-document",
+          "description": "产出结构化PRD文档，包含背景目标、功能清单、详细描述、非功能需求等章节",
+          "type": "contains",
+          "expected": "PRD 或 需求文档，且包含功能清单和详细描述"
+        },
+        {
+          "name": "produces-prototype",
+          "description": "产出原型图或线框图（HTML或描述形式），覆盖核心页面和交互流程",
+          "type": "contains",
+          "expected": "原型 或 prototype 或 线框"
+        },
+        {
+          "name": "design-considers-existing-ui",
+          "description": "UI设计部分明确提到需要结合/保持现有项目的UI风格一致性",
+          "type": "contains",
+          "expected": "现有项目UI风格 或 保持一致性 或 结合现有"
+        },
+        {
+          "name": "produces-flow-diagrams",
+          "description": "产出逻辑流程图（用户操作流程、数据流转、状态流转等）",
+          "type": "contains",
+          "expected": "流程图 或 flow 或 Mermaid"
+        },
+        {
+          "name": "writes-test-cases-before-dev",
+          "description": "在开发之前编写测试用例，且测试用例覆盖正向流程和异常场景",
+          "type": "contains",
+          "expected": "测试用例，且出现在开发/编码之前"
+        },
+        {
+          "name": "task-breakdown-enables-parallel",
+          "description": "任务拆分明确标注开发者分配、前置依赖，确保不同开发者可并行无冲突",
+          "type": "contains",
+          "expected": "任务分配表 或 开发者分配 或 并行，且有依赖关系"
+        },
+        {
+          "name": "references-coral-frontend-handoff",
+          "description": "在开发阶段提及交接给coral-frontend技能执行实际编码",
+          "type": "contains",
+          "expected": "coral-frontend 或 交接"
+        },
+        {
+          "name": "includes-regression-testing",
+          "description": "包含回归测试阶段，明确触发条件和验收标准",
+          "type": "contains",
+          "expected": "回归测试"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "从零开始做一个社区团购小程序的前端，核心功能有：商品浏览和搜索、拼团下单、团长管理后台、订单跟踪。3个前端开发一起做，2周内上线MVP。",
+      "expected_output": "应触发coral-workflow技能，识别为模式A（从0创建项目），额外产出技术选型和项目脚手架方案。需求提问应覆盖小程序特有约束（微信登录/支付/分享）、拼团业务逻辑、团长权限。任务拆分应确保3个开发者可并行无冲突，并考虑2周交付约束调整任务粒度",
+      "files": [],
+      "assertions": [
+        {
+          "name": "identifies-new-project-mode",
+          "description": "输出中明确识别为模式A（从0创建项目）",
+          "type": "contains",
+          "expected": "模式A 或 从0创建 或 新建项目"
+        },
+        {
+          "name": "produces-tech-stack-selection",
+          "description": "模式A额外产出技术选型方案（框架、UI库、状态管理等）",
+          "type": "contains",
+          "expected": "技术选型 或 技术栈 或 框架选择"
+        },
+        {
+          "name": "covers-miniprogram-constraints",
+          "description": "需求提问覆盖小程序特有约束（微信登录、支付、分享等）",
+          "type": "contains",
+          "expected": "小程序 或 微信 或 miniprogram"
+        },
+        {
+          "name": "task-assignments-match-developer-count",
+          "description": "任务分配涉及3个开发者，且有明确的并行执行方案",
+          "type": "contains",
+          "expected": "3个开发者 或 开发者A/B/C，且任务可并行"
+        },
+        {
+          "name": "considers-time-constraint",
+          "description": "考虑2周MVP交付约束，调整任务粒度和优先级",
+          "type": "contains",
+          "expected": "2周 或 MVP 或 交付时间"
+        },
+        {
+          "name": "asks-questions-about-group-buying-logic",
+          "description": "需求提问涉及拼团业务逻辑（成团规则、退款、团长权益等）",
+          "type": "contains",
+          "expected": "拼团 或 成团 或 团长"
+        },
+        {
+          "name": "writes-test-cases-before-dev",
+          "description": "在开发之前编写测试用例",
+          "type": "contains",
+          "expected": "测试用例，且出现在开发/编码之前"
+        },
+        {
+          "name": "includes-context-management",
+          "description": "包含上下文管理机制（项目文件+memory双保险）",
+          "type": "contains",
+          "expected": "上下文管理 或 进度持久化 或 memory"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "帮我在现有的珊瑚项目中实现一个数据导出功能，支持Excel和PDF两种格式，用户可以选择导出范围和时间筛选条件。",
+      "expected_output": "应触发coral-workflow技能（而非直接调coral-frontend），识别为模式B，先进行需求澄清（导出数据源、字段范围、权限控制、大文件处理等），再走完整流程。最终交接给coral-frontend执行实际编码",
+      "files": [],
+      "assertions": [
+        {
+          "name": "does-not-start-coding-immediately",
+          "description": "不直接开始编码，而是先进行需求分析和规划",
+          "type": "behavior",
+          "expected": "输出中不直接出现代码实现，而是先有需求分析和规划文档"
+        },
+        {
+          "name": "identifies-existing-project-mode",
+          "description": "识别为模式B（已有项目迭代）",
+          "type": "contains",
+          "expected": "模式B 或 已有项目 或 现有项目迭代"
+        },
+        {
+          "name": "asks-about-export-edge-cases",
+          "description": "需求提问涉及导出功能的边界场景（大数据量、超时、权限控制、字段范围等）",
+          "type": "contains",
+          "expected": "大数据量 或 权限 或 导出范围 或 超时 或 字段"
+        },
+        {
+          "name": "produces-tech-solution-options",
+          "description": "为技术难点提供多个可选方案（如Excel生成方案、PDF方案等），让用户选择",
+          "type": "contains",
+          "expected": "方案A 或 方案B 或 多个方案 或 选型"
+        },
+        {
+          "name": "writes-test-cases-for-export",
+          "description": "编写针对导出功能的测试用例（包含导出成功、大文件、格式验证等）",
+          "type": "contains",
+          "expected": "测试用例，且涉及导出或Excel或PDF相关场景"
+        },
+        {
+          "name": "references-coral-frontend-handoff",
+          "description": "提及交接给coral-frontend执行实际编码",
+          "type": "contains",
+          "expected": "coral-frontend 或 交接"
+        },
+        {
+          "name": "does-not-skip-flow-diagram",
+          "description": "不跳过逻辑流程图，为导出功能梳理完整流程",
+          "type": "contains",
+          "expected": "流程图 或 flow 或 Mermaid"
+        }
+      ]
+    }
+  ]
+}
