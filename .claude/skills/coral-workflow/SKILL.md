@@ -16,6 +16,31 @@ description: |
 
 # Coral 前端全流程协作开发技能
 
+## 续接机制（每次启动时最先执行）
+
+**本技能支持分阶段清空上下文继续执行，防止单次会话超限。**
+
+每次技能触发时，首先检查是否存在 `docs/workflow/progress.json`：
+
+**如果存在（续接模式）：**
+1. 读取 `docs/workflow/progress.json` 获取当前阶段和进度
+2. 读取 `docs/workflow/progress.md` 获取详细上下文
+3. 读取 memory 文件获取关键决策索引
+4. 告知用户："检测到未完成的工作流，当前阶段：[阶段名称]，从断点继续执行"
+5. 从断点阶段开始执行，跳过已完成的阶段
+
+**如果不存在（新项目模式）：**
+1. 进入 阶段0：项目模式识别
+2. 创建 `docs/workflow/` 目录结构
+3. 初始化空的 `progress.json` 和 `progress.md`
+
+**续接保证：**
+- 每个阶段完成后，必须执行"阶段完成检查点"（见下文各阶段末尾）
+- 检查点会保存所有状态到 `progress.json` + `progress.md` + memory
+- 清空上下文后重新触发技能时，自动从断点继续
+
+---
+
 ## 核心原则
 
 不急于写代码。先理清需求，再拆分任务，最后以测试用例为准驱动开发。任何阶段遇到疑问，必须先向用户确认，再继续推进。
@@ -63,6 +88,48 @@ description: |
 
 **执行：** 使用 AskUserQuestion 确认项目模式。若为模式B，先分析现有项目代码结构生成规范文档，存入 `docs/workflow/project-spec.md`。
 
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 0,
+  "phase_name": "项目模式识别",
+  "status": "completed",
+  "project_mode": "A/B",
+  "output_files": ["docs/workflow/project-spec.md"],
+  "next_phase": 1
+}
+```
+
+2. **保存进度到 progress.md：**
+```markdown
+# 工作流进度
+
+## 阶段 0：项目模式识别 ✅
+
+**状态**：已完成
+**项目模式**：[模式A/模式B]
+**完成时间**：[时间戳]
+
+### 产出文件
+- `docs/workflow/project-spec.md`
+
+### 下一阶段
+阶段 1：需求分析（产品经理视角）
+```
+
+3. **保存到 memory：**
+创建 `memory/phase-0-completed.md`，记录项目模式决策。
+
+4. **告知用户：**
+"阶段 0 完成。项目模式为 [模式A/模式B]。
+已保存进度到 docs/workflow/progress.json。
+可以清空上下文后重新触发技能，自动进入阶段 1。"
+
+
 ---
 
 ## 阶段 1：需求分析（产品经理视角）
@@ -93,6 +160,35 @@ description: |
 - 模式B需标注与现有页面的关联
 
 保存到 `docs/workflow/prototype/index.html`。
+
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 1,
+  "phase_name": "需求分析",
+  "status": "completed",
+  "output_files": [
+    "docs/workflow/prd.md",
+    "docs/workflow/prd.json",
+    "docs/workflow/prototype/index.html"
+  ],
+  "next_phase": 2
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 1 完成记录。
+
+3. **保存到 memory：**
+创建 `memory/phase-1-completed.md`，记录核心需求和关键决策。
+
+4. **告知用户：**
+"阶段 1 完成。PRD 和原型已生成。
+已保存进度。可以清空上下文后继续，自动进入阶段 2。"
+
 
 ---
 
@@ -255,6 +351,36 @@ docs/workflow/design-specs/
 
 **为什么要求这么多细节**：设计稿是开发人员的唯一视觉参照。如果设计稿有遗漏，开发人员要么自行脑补（导致与设计师意图不一致），要么反复询问（浪费沟通成本）。标注到"开发人员可以直接照着写代码"的粒度，才能确保最终实现与设计一致。
 
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 2,
+  "phase_name": "UI/UX设计",
+  "status": "completed",
+  "design_decision": "用户选定的方案",
+  "output_files": [
+    "docs/workflow/design-options/",
+    "docs/workflow/design-decision.md",
+    "docs/workflow/design-specs/"
+  ],
+  "next_phase": 3
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 2 完成记录，记录选定的设计方向。
+
+3. **保存到 memory：**
+创建 `memory/phase-2-completed.md`，记录设计决策和设计规范关键点。
+
+4. **告知用户：**
+"阶段 2 完成。设计稿已产出。
+已保存进度。可以清空上下文后继续，自动进入阶段 3。"
+
+
 ---
 
 ## 阶段 3：逻辑梳理与技术方案（架构师视角）
@@ -337,6 +463,39 @@ sequenceDiagram
 
 保存到 `docs/workflow/tech-solutions.md` + `docs/workflow/tech-solutions.json`。
 
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 3,
+  "phase_name": "逻辑梳理与技术方案",
+  "status": "completed",
+  "output_files": [
+    "docs/workflow/flow-diagrams.md",
+    "docs/workflow/integration-contract.md",
+    "docs/workflow/integration-contract.json",
+    "docs/workflow/questions.md",
+    "docs/workflow/tech-solutions.md",
+    "docs/workflow/tech-solutions.json"
+  ],
+  "questions_resolved": true,
+  "next_phase": 4
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 3 完成记录，记录技术选型决策。
+
+3. **保存到 memory：**
+创建 `memory/phase-3-completed.md`，记录集成契约和关键技术决策。
+
+4. **告知用户：**
+"阶段 3 完成。逻辑流程、集成契约和技术方案已确定。
+已保存进度。可以清空上下文后继续，自动进入阶段 4。"
+
+
 ---
 
 ## 阶段 4：测试用例编写（测试视角，开发前完成）
@@ -390,6 +549,40 @@ sequenceDiagram
 
 每条用例包含：编号、标题、前置条件、测试步骤、预期结果、优先级（P0/P1/P2）、所属类别（功能/集成/端到端）、所属模块、测试结果（未执行/通过/未通过）、关联Bug编号。
 
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 4,
+  "phase_name": "测试用例编写",
+  "status": "completed",
+  "test_case_stats": {
+    "total": 0,
+    "functional": 0,
+    "integration": 0,
+    "e2e": 0
+  },
+  "output_files": [
+    "docs/workflow/test-cases.md",
+    "docs/workflow/test-cases.json"
+  ],
+  "next_phase": 5
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 4 完成记录，统计用例数量。
+
+3. **保存到 memory：**
+创建 `memory/phase-4-completed.md`，记录测试用例概览和关键验收标准。
+
+4. **告知用户：**
+"阶段 4 完成。测试用例已编写完成（功能[X]条、集成[X]条、端到端[X]条）。
+已保存进度。可以清空上下文后继续，自动进入阶段 5。"
+
+
 ---
 
 ## 阶段 5：任务拆分与分配（项目经理视角）
@@ -433,6 +626,41 @@ sequenceDiagram
 ### 5.4 依赖拓扑
 
 明确标注任务间的先后依赖，形成可并行执行的拓扑图，用 Mermaid 语法写入任务分配文档。
+
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 5,
+  "phase_name": "任务拆分与分配",
+  "status": "completed",
+  "task_stats": {
+    "total": 0,
+    "pending": 0,
+    "in_progress": 0,
+    "completed": 0
+  },
+  "output_files": [
+    "docs/workflow/task-assignment.md",
+    "docs/workflow/task-assignment.json"
+  ],
+  "next_phase": 6
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 5 完成记录，列出任务概览。
+
+3. **保存到 memory：**
+创建 `memory/phase-5-completed.md`，记录任务分配概览和依赖关系。
+
+4. **告知用户：**
+"阶段 5 完成。任务已拆分完成（共[X]个任务）。
+已保存进度。可以清空上下文后继续，自动进入阶段 6（开发执行）。
+注意：阶段 6 会交接给 coral-frontend 技能执行编码。"
+
 
 ---
 
@@ -547,6 +775,37 @@ Agent({
 
 不要写完代码就说"完成了" — 写完只是第一步，验证通过才是完成。
 
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 6,
+  "phase_name": "开发执行",
+  "status": "completed",
+  "task_stats": {
+    "total": 0,
+    "completed": 0,
+    "integration_passed": true
+  },
+  "output_files": [],
+  "smoke_test_results": "passed",
+  "next_phase": 7
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 6 完成记录，记录所有任务完成状态和集成拼装结果。
+
+3. **保存到 memory：**
+创建 `memory/phase-6-completed.md`，记录开发完成情况和关键代码决策。
+
+4. **告知用户：**
+"阶段 6 完成。所有开发任务已完成，集成拼装通过，冒烟测试通过。
+已保存进度。可以清空上下文后继续，自动进入阶段 7（功能测试）。"
+
+
 ---
 
 ## 阶段 7：功能测试（测试工程师视角）
@@ -586,6 +845,41 @@ Agent({
 
 Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
+### 阶段完成检查点
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 7,
+  "phase_name": "功能测试",
+  "status": "completed",
+  "test_results": {
+    "e2e": { "total": 0, "passed": 0, "failed": 0 },
+    "integration": { "total": 0, "passed": 0, "failed": 0 },
+    "functional": { "total": 0, "passed": 0, "failed": 0 }
+  },
+  "bugs_resolved": 0,
+  "output_files": [
+    "docs/workflow/bugs.md",
+    "docs/workflow/bugs.json"
+  ],
+  "next_phase": 8
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 7 完成记录，记录测试结果和 Bug 修复情况。
+
+3. **保存到 memory：**
+创建 `memory/phase-7-completed.md`，记录测试结果摘要和遗留问题（如果有）。
+
+4. **告知用户：**
+"阶段 7 完成。功能测试完成（通过[X]条、失败[X]条）。
+所有 Bug 已修复。
+已保存进度。可以清空上下文后继续，自动进入阶段 8（回归测试与交付）。"
+
+
 ---
 
 ## 阶段 8：回归测试与交付
@@ -608,9 +902,68 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 完成后生成 `docs/workflow/delivery-report.md` + `docs/workflow/delivery-report.json`。
 
+### 阶段完成检查点（最终交付）
+
+**本阶段完成后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 8,
+  "phase_name": "回归测试与交付",
+  "status": "completed",
+  "regression_test_results": {
+    "p0_passed": true,
+    "p1_coverage": 0.8,
+    "total_issues": 0
+  },
+  "output_files": [
+    "docs/workflow/delivery-report.md",
+    "docs/workflow/delivery-report.json"
+  ],
+  "workflow_complete": true,
+  "completed_at": "ISO-8601-timestamp"
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 8 完成记录，标记整个工作流完成。
+
+3. **保存到 memory：**
+创建 `memory/phase-8-completed.md`，记录最终交付结果。
+
+4. **告知用户：**
+"阶段 8 完成。回归测试全部通过，工作流完成！
+交付报告已生成：docs/workflow/delivery-report.md
+所有阶段已完成，项目已交付。"
+
+
 ---
 
 ## 上下文管理（自动执行）
+
+### 阶段完成检查点机制
+
+**核心原则**：每个阶段完成后必须执行检查点操作，确保即使清空上下文也能无缝续接。
+
+**检查点操作四步骤：**
+
+1. **保存结构化进度到 `docs/workflow/progress.json`**
+   - 包含：当前阶段、阶段状态、产出文件列表、下一阶段、关键统计数据
+   - 这是续接时最可靠的信息源
+
+2. **保存可读进度到 `docs/workflow/progress.md`**
+   - 包含：人类可读的进度总结、已完成阶段列表、关键决策记录
+   - 方便用户直接查看进度
+
+3. **保存关键索引到 memory**
+   - 创建 `memory/phase-{N}-completed.md`
+   - 包含：该阶段的关键决策、重要输出、待处理事项
+   - 防止 progress 文件遗漏时丢失关键上下文
+
+4. **告知用户并建议清空上下文**
+   - 输出完成消息，告知当前阶段已完成
+   - 明确说明"已保存进度，可以清空上下文后继续"
+   - 提示下一阶段的入口
 
 ### 双保险机制
 
@@ -622,9 +975,9 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 ### 持久化触发时机
 
-- 每个阶段完成时
-- 每个任务状态变更时
-- 检测到上下文使用量较高时
+- **强制**：每个阶段完成时必须执行检查点
+- **可选**：每完成一个任务时更新 progress.json（当任务数量较多时）
+- **建议**：检测到上下文使用量较高时主动保存
 
 ### 持久化内容
 
@@ -639,10 +992,25 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 ### 恢复流程
 
 当新会话启动且检测到 `docs/workflow/progress.json` 存在时：
-1. 读取 progress.json 获取结构化进度
-2. 读取 memory 获取关键决策索引
-3. 从断点阶段继续执行
-4. 全程使用与首次执行相同的质量标准
+1. 读取 progress.json 获取结构化进度（current_phase 字段确定断点）
+2. 读取 progress.md 获取详细上下文
+3. 读取 memory 文件获取关键决策索引
+4. 告知用户："检测到未完成的工作流，当前阶段：[阶段名称]，从断点继续执行"
+5. 直接跳转到断点阶段，跳过所有已完成的阶段
+6. 全程使用与首次执行相同的质量标准
+
+**示例续接消息：**
+```
+检测到未完成的工作流
+─────────────────────
+当前进度：阶段 4 - 测试用例编写（已完成）
+下一阶段：阶段 5 - 任务拆分与分配
+已产出文件：
+  - docs/workflow/prd.json ✅
+  - docs/workflow/test-cases.json ✅
+─────────────────────
+从断点继续执行...
+```
 
 ---
 
@@ -663,3 +1031,4 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 13. **简单至上** — 只写要求的，不预留灵活性，不为单次使用做抽象，能短则短
 14. **手术式修改** — 只改必须改的，不顺手重构相邻代码，风格与周围保持一致
 15. **目标驱动** — 每个任务必须转化为可验证目标，验证通过才算完成
+16. **检查点必执行** — 每个阶段完成后必须执行检查点操作（保存 progress.json、progress.md、memory），清空上下文后能无缝续接
