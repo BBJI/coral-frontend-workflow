@@ -743,26 +743,131 @@ sequenceDiagram
 
 ### 6.2 Subagent 并行开发
 
-对于无依赖关系的任务，使用 Agent 工具并行执行：
+**重要前提：每个 Agent 是独立的 session**
 
+- 每个 Agent 有**独立的上下文窗口**，无法看到主会话的上下文
+- Agent 之间的所有通信必须通过**文件系统**传递
+- Agent 启动时必须从文件读取所需的全部上下文
+- Agent 完成后必须将结果写入文件供其他 Agent 读取
+
+**上下文传递机制：**
+
+在启动 Agent 之前，主会话必须准备以下文件供 Agent 读取：
+```
+docs/workflow/
+├── agent-context/                 # Agent 上下文目录（每个 Agent 一份）
+│   ├── developer-A.json         # 开发者A的专属上下文
+│   ├── developer-B.json         # 开发者B的专属上下文
+│   └── ...
+├── agent-heartbeat/              # Agent 心跳文件（用于检测卡死）
+│   ├── developer-A.heartbeat     # 开发者A的心跳文件
+│   ├── developer-B.heartbeat     # 开发者B的心跳文件
+│   └── ...
+├── prd.json                      # PRD（所有 Agent 共享）
+├── integration-contract.json     # 集成契约（所有 Agent 共享）
+├── tech-solutions.json           # 技术方案（所有 Agent 共享）
+└── task-assignment.json          # 任务分配表（所有 Agent 共享）
+```
+
+**Agent 启动流程：**
+
+1. **准备 Agent 上下文文件**（主会话执行）：
+```json
+// docs/workflow/agent-context/developer-A.json
+{
+  "agent_name": "developer-A",
+  "agent_role": "开发者",
+  "assigned_tasks": ["T-002", "T-005"],
+  "integration_contract_path": "docs/workflow/integration-contract.json",
+  "prd_path": "docs/workflow/prd.json",
+  "tech_solutions_path": "docs/workflow/tech-solutions.json",
+  "progress_file": "docs/workflow/task-assignment.json",
+  "heartbeat_file": "docs/workflow/agent-heartbeat/developer-A.heartbeat",
+  "timeout_minutes": 30
+}
+```
+
+2. **启动 Agent**：
 ```
 Agent({
   subagent_type: "general-purpose",
   name: "developer-A",
-  prompt: "你是开发者A。请调用 /coral-frontend 技能，执行以下任务：
-    任务详情来自 docs/workflow/task-assignment.json 中指派给开发者A的任务。
-    重要：你必须严格遵守 docs/workflow/integration-contract.json 中定义的接口契约。
-    你负责的模块对外的接口签名、参数结构、返回值必须与集成契约完全一致。
-    完成后更新 task-assignment.json 和 task-assignment.md 中的进度状态。"
+  prompt: "你是开发者A。请严格按照以下步骤执行：
+
+步骤1：读取你的上下文文件
+  读取 docs/workflow/agent-context/developer-A.json，获取你的任务、契约和配置。
+
+步骤2：启动心跳机制
+  每隔5分钟更新一次心跳文件 docs/workflow/agent-heartbeat/developer-A.heartbeat，
+  写入当前时间戳和正在执行的任务ID。格式：{"heartbeat_at": "ISO-8601", "current_task": "T-002"}
+
+步骤3：调用 /coral-frontend 技能执行任务
+  读取 docs/workflow/integration-contract.json 中的接口契约
+  读取 docs/workflow/prd.json 了解需求
+  读取 docs/workflow/tech-solutions.json 了解技术方案
+  调用 /coral-frontend 技能，执行你的任务（T-002, T-005）
+
+步骤4：完成任务后更新进度
+  更新 docs/workflow/task-assignment.json 中对应任务的状态为"completed"
+  写入完成时间
+
+步骤5：停止心跳
+  在心跳文件中写入 {"status": "completed", "completed_at": "ISO-8601"}
+
+重要提醒：
+- 你是独立 session，只能通过文件获取上下文
+- 必须严格遵守集成契约中的接口定义
+- 如果遇到无法解决的问题，写入 docs/workflow/agent-issues/developer-A.json"
 })
 ```
 
-并行策略：
+3. **监控 Agent 心跳**（主会话执行）：
+- 启动 Agent 后，每隔 2 分钟检查一次心跳文件
+- 如果心跳文件超过 30 分钟未更新，判定为**卡死**
+- 卡死处理：尝试重新启动该 Agent，最多重试 1 次
+- 如果重试后仍卡死，标记任务为"failed"并记录到 docs/workflow/agent-failures/
+
+**并行策略：**
 - 同一时刻可启动多个 Agent，每个代表一个开发者
 - 每个 Agent 独立处理自己的任务集，不操作其他开发者的文件
 - 共享依赖任务完成后，再启动依赖它的后续任务 Agent
 - 每个 Agent 完成后更新 `task-assignment.json` 中的进度状态
-- **每个 Agent 的 prompt 必须包含集成契约文件路径**，确保接口一致性
+- **每个 Agent 通过文件获取上下文，不依赖主会话的上下文窗口**
+
+**Agent 卡死检测和恢复：**
+
+心跳文件格式：
+```json
+// 正在执行时的心跳
+{"heartbeat_at": "2026-05-08T10:30:00Z", "current_task": "T-002", "status": "running"}
+
+// 完成时的心跳
+{"status": "completed", "completed_at": "2026-05-08T10:45:00Z", "heartbeat_at": "2026-05-08T10:45:00Z"}
+
+// 失败时的心跳
+{"status": "failed", "failed_at": "2026-05-08T10:50:00Z", "error": "超时未响应", "heartbeat_at": "2026-05-08T10:20:00Z"}
+```
+
+卡死检测逻辑：
+```
+for each agent:
+  last_heartbeat = 读取 heartbeat_file
+  if (now - last_heartbeat.heartbeat_at) > timeout_minutes * 60:
+    if (agent.retry_count < 1):
+      agent.retry_count += 1
+      重新启动 agent
+    else:
+      标记任务为 failed
+      记录失败原因到 agent-failures/
+```
+
+**Agent 失败处理：**
+
+如果 Agent 卡死且重试后仍失败：
+1. 将相关任务状态标记为"failed"
+2. 记录失败信息到 `docs/workflow/agent-failures/{agent-name}.json`
+3. 告知用户："Agent {agent-name} 执行失败，需要手动处理"
+4. 暂停后续依赖任务，等待用户决策
 
 ### 6.3 集成拼装（所有并行开发完成后）
 
@@ -1119,3 +1224,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 14. **手术式修改** — 只改必须改的，不顺手重构相邻代码，风格与周围保持一致
 15. **目标驱动** — 每个任务必须转化为可验证目标，验证通过才算完成
 16. **自动清空续接** — 每个阶段完成后输出 `[CLEAR_AND_CONTINUE]` 指令，系统自动清空上下文并继续下一阶段，无需用户手动操作
+17. **Agent 独立 session** — 每个 Agent 是独立 session，上下文窗口独立，只能通过文件系统传递信息，启动前必须准备完整的上下文文件
+18. **Agent 心跳必启** — 每个 Agent 启动时必须开启心跳机制，每5分钟更新心跳文件，超时未更新判定为卡死
+19. **Agent 超时重试** — Agent 卡死后自动重试1次，重试仍失败则标记为 failed 并通知用户
+20. **Agent 文件隔离** — 每个 Agent 只操作分配给自己的文件，不触碰其他 Agent 的文件，通过共享文件（progress.json）协调进度
