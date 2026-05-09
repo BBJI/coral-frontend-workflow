@@ -28,11 +28,15 @@ description: |
 1. 读取 `docs/workflow/progress.json` 获取当前阶段和进度
 2. 读取 `docs/workflow/progress.md` 获取详细上下文
 3. 读取 memory 文件获取关键决策索引
-4. 输出简短续接信息："继续执行阶段 [N]：[阶段名称]"
+4. 检查 `restart_count` 和 `last_validation` 字段：
+   - 如果 `last_validation` 为 "未通过"，输出："检测到上轮验证未通过，正在重新梳理需求..."
+   - 输出续接信息："继续执行阶段 [N]：[阶段名称]（第 [X] 次重启）"
 5. 从断点阶段开始执行，跳过所有已完成的阶段
+6. 读取 `docs/workflow/final-validation-report.md`（如果存在）获取上轮验证的问题列表
+7. 读取 `docs/workflow/restart-history.md`（如果存在）获取历史重启记录
 
 **如果不存在（新项目模式）：**
-1. 进入 阶段0：项目模式识别
+1. 进入 阶段0：项目模式识别 + 原始需求捕获
 2. 创建 `docs/workflow/` 目录结构
 3. 初始化空的 `progress.json` 和 `progress.md`
 
@@ -58,9 +62,31 @@ description: |
    - 自动重新触发 `coral-workflow` 技能
    - 技能从 progress.json 读取断点，自动继续下一阶段
 
+### 工作流重启机制
+
+**当阶段9验证未通过时，触发工作流重启：**
+
+1. **输出重启指令**：
+   ```
+   [RESTART_WORKFLOW]
+   阶段 9 验证未通过
+   原因：[验证未通过的具体原因]
+   需要重新从阶段 1 开始梳理需求
+   重启次数：[N]
+   [/RESTART_WORKFLOW]
+   ```
+
+2. **系统处理重启** — 系统检测到 `[RESTART_WORKFLOW]` 标记后：
+   - 执行 `/clear` 命令清空当前会话上下文
+   - 自动重新触发 `coral-workflow` 技能
+   - 技能从 progress.json 读取 `restart_count` 和 `last_validation`
+   - 从阶段1重新开始，但保留原始需求和验证报告
+
+3. **重启限制** — 最多允许重启3次，超过后停止自动重启，请求用户决策
+
 ### 技能间的自动流转
 
-整个工作流通过 `[CLEAR_AND_CONTINUE]` 指令在技能间自动流转：
+整个工作流通过指令在技能间自动流转：
 
 ```
 /coral-workflow → 阶段0完成 → [CLEAR_AND_CONTINUE] → /clear → /coral-workflow
@@ -69,7 +95,13 @@ description: |
                                                           ↓
                                                     /clear → /coral-workflow
                                                           ↓
-                                                    ... 直到阶段8完成
+                                                    ... 直到阶段9
+                                                          ↓
+                                                    阶段9验证 → [WORKFLOW_COMPLETE] 完成
+                                                          ↓
+                                              或 [RESTART_WORKFLOW] 重启
+                                                          ↓
+                                                    /clear → /coral-workflow（从阶段1重新开始）
 ```
 
 ---
@@ -85,7 +117,9 @@ description: |
 ## 阶段总览
 
 ```
-阶段0: 项目模式识别
+阶段0: 项目模式识别 + 原始需求捕获
+  ├─ 0.1 识别项目模式（从0创建/已有项目迭代）
+  └─ 0.2 捕获并保存用户原始需求（持久化存储，即使清空上下文也不会丢失）
   ↓
 阶段1: 需求分析（产品经理视角）→ PRD + 原型
   ↓
@@ -106,13 +140,21 @@ description: |
 阶段7: 功能测试（测试工程师视角）→ 端到端优先 → 集成 → 功能
   ↓
 阶段8: 回归测试与交付（项目经理视角）→ 整体验收
+  ↓
+阶段9: 最终验证（产品经理Agent）→ 对照原始需求验证，确保完全符合用户意图
+  ├─ 验证通过 → [WORKFLOW_COMPLETE] 真正完成
+  └─ 验证未通过 → 重新从阶段1开始梳理，直到验证通过为止
 ```
 
 每个阶段完成时，将进度写入 `docs/workflow/progress.json`（结构化）和 `docs/workflow/progress.md`（可读），并在 memory 中记录关键状态，实现双保险上下文管理。
 
 ---
 
-## 阶段 0：项目模式识别
+## 阶段 0：项目模式识别 + 原始需求捕获
+
+本阶段有两个核心任务：识别项目模式，以及捕获并持久化保存用户的原始需求。
+
+### 0.1 项目模式识别
 
 判断当前项目属于哪种模式，后续所有流程据此调整：
 
@@ -122,6 +164,83 @@ description: |
 
 **执行：** 使用 AskUserQuestion 确认项目模式。若为模式B，先分析现有项目代码结构生成规范文档，存入 `docs/workflow/project-spec.md`。
 
+### 0.2 原始需求捕获（关键步骤）
+
+**为什么需要原始需求捕获**：
+- 整个流程会经历多次上下文清空（每个阶段完成后自动清空）
+- 开发过程中可能发生需求理解偏差
+- 最终必须验证已完成功能是否符合用户最初的真实意图
+- 只有验证通过才算真正完成，否则需要重新从阶段1开始
+
+**执行步骤**：
+
+1. **捕获用户原始输入**
+   - 记录用户最初的完整需求描述
+   - 记录用户的期望和约束条件
+   - 记录用户提到的任何偏好、参考、目标等
+
+2. **保存到持久化文件**
+   创建 `docs/workflow/original-request.md`，格式如下：
+
+   ```markdown
+   # 用户原始需求
+
+   ## 原始输入（原文）
+   [完整记录用户最初的输入，不做任何修改或总结]
+
+   ## 捕获时间
+   [ISO-8601 时间戳]
+
+   ## 上下文信息
+   - 项目模式：[模式A/模式B]
+   - 是否为重启流程：[是/否]
+   - 重启次数：[当前是第几次重新开始]
+
+   ## 核心意图提取
+   - 业务目标：
+   - 核心场景：
+   - 关键约束：
+   - 期望成果：
+
+   ## 验证要点（用于阶段9验证）
+   1. [核心功能点1]
+   2. [核心功能点2]
+   3. [核心功能点3]
+   ...
+   ```
+
+3. **保存 JSON 格式**（便于 AI 读取）
+   创建 `docs/workflow/original-request.json`：
+
+   ```json
+   {
+     "original_input": "用户原始输入原文",
+     "captured_at": "ISO-8601 时间戳",
+     "project_mode": "A/B",
+     "is_restart": false,
+     "restart_count": 0,
+     "core_intents": {
+       "business_goal": "业务目标",
+       "core_scenarios": ["核心场景1", "核心场景2"],
+       "key_constraints": ["约束1", "约束2"],
+       "expected_outcomes": ["期望1", "期望2"]
+     },
+     "validation_checkpoints": [
+       "验证要点1",
+       "验证要点2",
+       "验证要点3"
+     ]
+   }
+   ```
+
+4. **保存到 memory**
+   创建 `memory/original-request.md`，作为备份，确保即使 docs 目录被删除也能恢复原始需求。
+
+**重要原则**：
+- 原始需求一经保存，**绝不允许修改**
+- 如果需求变更，创建新的版本而不是修改原文件
+- 阶段9的验证始终以原始需求为准，确保最终交付符合用户最初的真实意图
+
 ### 阶段完成检查点
 
 **本阶段完成后，执行以下检查点操作：**
@@ -130,10 +249,16 @@ description: |
 ```json
 {
   "current_phase": 0,
-  "phase_name": "项目模式识别",
+  "phase_name": "项目模式识别与原始需求捕获",
   "status": "completed",
   "project_mode": "A/B",
-  "output_files": ["docs/workflow/project-spec.md"],
+  "original_request_captured": true,
+  "restart_count": 0,
+  "output_files": [
+    "docs/workflow/project-spec.md",
+    "docs/workflow/original-request.md",
+    "docs/workflow/original-request.json"
+  ],
   "next_phase": 1
 }
 ```
@@ -142,27 +267,31 @@ description: |
 ```markdown
 # 工作流进度
 
-## 阶段 0：项目模式识别 ✅
+## 阶段 0：项目模式识别与原始需求捕获 ✅
 
 **状态**：已完成
 **项目模式**：[模式A/模式B]
-**完成时间**：[时间戳]
+**原始需求已捕获**：是
+**捕获时间**：[时间戳]
 
 ### 产出文件
 - `docs/workflow/project-spec.md`
+- `docs/workflow/original-request.md` - 用户原始需求（不可修改）
+- `docs/workflow/original-request.json` - 原始需求结构化数据
 
 ### 下一阶段
 阶段 1：需求分析（产品经理视角）
 ```
 
 3. **保存到 memory：**
-创建 `memory/phase-0-completed.md`，记录项目模式决策。
+创建 `memory/phase-0-completed.md`，记录项目模式决策和原始需求摘要。
 
 4. **输出续接指令：**
 ```
 [CLEAR_AND_CONTINUE]
-阶段 0 已完成：项目模式识别
+阶段 0 已完成：项目模式识别与原始需求捕获
 项目模式：[模式A/模式B]
+原始需求已保存到 docs/workflow/original-request.md
 下一阶段：阶段 1 - 需求分析（产品经理视角）
 [/CLEAR_AND_CONTINUE]
 ```
@@ -802,24 +931,184 @@ Agent({
   每隔5分钟更新一次心跳文件 docs/workflow/agent-heartbeat/developer-A.heartbeat，
   写入当前时间戳和正在执行的任务ID。格式：{"heartbeat_at": "ISO-8601", "current_task": "T-002"}
 
-步骤3：调用 /coral-frontend 技能执行任务
+步骤3：读取共享上下文
   读取 docs/workflow/integration-contract.json 中的接口契约
   读取 docs/workflow/prd.json 了解需求
   读取 docs/workflow/tech-solutions.json 了解技术方案
-  调用 /coral-frontend 技能，执行你的任务（T-002, T-005）
+  读取 docs/workflow/design-specs/ 中的设计稿
 
-步骤4：完成任务后更新进度
-  更新 docs/workflow/task-assignment.json 中对应任务的状态为"completed"
-  写入完成时间
+步骤4：逐个执行任务（每个任务完成后必须测试）
+  对你的每个任务（如 T-002, T-005），按以下子流程执行：
+  
+  子流程：执行单个任务
+  
+  4.1 调用 /coral-frontend 技能实现任务代码
+  
+  4.2 更新心跳，标记当前任务
+      写入 {"heartbeat_at": "ISO-8601", "current_task": "T-002", "sub_status": "testing"}
+  
+  4.3 编写并运行 Playwright 单元测试
+      - 为该任务编写 Playwright 测试用例
+      - 测试文件位置：tests/unit/[task-name].spec.ts
+      - 运行测试：npm run test:unit -- [task-name].spec.ts
+      - 检查测试结果
+  
+  4.4 使用 Playwright 进行样式验证
+      - 启动开发服务器：npm run dev
+      - 访问该任务相关的页面/组件
+      - 使用 Playwright 检查样式问题：
+        * 元素位置和尺寸
+        * 颜色和对比度
+        * 字体样式
+        * 间距和对齐
+        * 交互状态（hover/active/disabled）
+      - 截图保存到 tests/screenshots/[task-name]/
+  
+  4.5 检查测试和样式验证结果
+      如果有任何测试失败或样式问题：
+        - 分析失败原因
+        - 修复代码问题
+        - 重新运行测试和样式验证
+        - 循环直到所有测试通过、所有样式问题修复
+  
+  4.6 记录任务完成
+      - 更新任务状态为"completed"
+      - 写入完成时间
+      - 将测试结果和样式验证结果记录到 docs/workflow/agent-test-results/developer-A/[task-id].json
+  
+  4.7 更新心跳
+      写入 {"heartbeat_at": "ISO-8601", "current_task": "T-002", "sub_status": "completed"}
 
-步骤5：停止心跳
+步骤5：所有任务完成后更新全局进度
+  更新 docs/workflow/task-assignment.json 中所有任务的状态为"completed"
+
+步骤6：停止心跳
   在心跳文件中写入 {"status": "completed", "completed_at": "ISO-8601"}
 
 重要提醒：
 - 你是独立 session，只能通过文件获取上下文
 - 必须严格遵守集成契约中的接口定义
+- 每个任务完成后必须通过 Playwright 测试和样式验证才能进入下一个任务
+- 测试失败或样式有问题时必须修复，不能跳过
 - 如果遇到无法解决的问题，写入 docs/workflow/agent-issues/developer-A.json"
 })
+```
+
+**每个任务的测试和样式验证循环：**
+
+```
+任务开始
+  ↓
+实现代码
+  ↓
+运行 Playwright 单元测试
+  ↓
+┌─ 测试通过？ ──否→ 修复代码 ────┐
+│    ↓是                         │
+│ 样式验证                     │
+│    ↓                         │
+┌─ 样式OK？ ────否→ 修复样式 ──┤
+│    ↓是                        │
+│ 记录任务完成                  │
+└────────────────────────────────┘
+  ↓
+进入下一个任务
+```
+
+**Playwright 测试模板：**
+
+每个任务的测试文件应包含：
+```typescript
+// tests/unit/[task-name].spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('[Task-XXX] 任务名称', () => {
+  test('功能正确性', async ({ page }) => {
+    // 访问页面
+    await page.goto('/path/to/page');
+    
+    // 测试核心功能
+    await expect(page.locator('.element')).toBeVisible();
+    await page.click('.button');
+    await expect(page.locator('.result')).toHaveText('expected');
+  });
+
+  test('样式验证', async ({ page }) => {
+    await page.goto('/path/to/page');
+    
+    // 验证元素存在
+    const element = page.locator('.element');
+    await expect(element).toBeVisible();
+    
+    // 验证颜色和对比度
+    const styles = await element.evaluate(el => {
+      const computed = window.getComputedStyle(el);
+      return {
+        color: computed.color,
+        backgroundColor: computed.backgroundColor,
+        fontSize: computed.fontSize,
+        padding: computed.padding
+      };
+    });
+    
+    // 验证样式符合设计规范
+    expect(styles.color).not.toBe('rgba(0, 0, 0, 0)');
+    expect(styles.fontSize).toBeTruthy();
+  });
+
+  test('交互状态', async ({ page }) => {
+    await page.goto('/path/to/page');
+    
+    const button = page.locator('.button');
+    
+    // 验证 hover 状态
+    await button.hover();
+    await expect(button).toHaveCSS('background-color', /hover-color/);
+    
+    // 验证 active 状态
+    await button.click();
+    await expect(button).toHaveCSS('transform', /scale/);
+  });
+});
+```
+
+**样式验证检查清单（Agent 执行）：**
+
+每个任务样式验证时，使用 Playwright 检查：
+1. 元素可见性（toBeVisible）
+2. 元素位置（boundingBox）
+3. 元素尺寸（boundingBox）
+4. 颜色值（evaluate 获取 computedStyle）
+5. 字体样式（fontSize, fontFamily, fontWeight）
+6. 间距（padding, margin）
+7. 对齐（text-align, flexbox 布局）
+8. 交互状态（hover, active, disabled）
+
+**测试结果记录格式：**
+
+```json
+// docs/workflow/agent-test-results/developer-A/T-002.json
+{
+  "task_id": "T-002",
+  "task_name": "任务名称",
+  "agent": "developer-A",
+  "started_at": "ISO-8601",
+  "completed_at": "ISO-8601",
+  "unit_tests": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0,
+    "test_file": "tests/unit/T-002.spec.ts"
+  },
+  "style_verification": {
+    "issues_found": 0,
+    "issues_fixed": 0,
+    "screenshots": ["tests/screenshots/T-002/1.png"],
+    "passed": true
+  },
+  "retry_count": 0,
+  "status": "completed"
+}
 ```
 
 3. **监控 Agent 心跳**（主会话执行）：
@@ -1222,12 +1511,12 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 ### 8.3 交付判定
 
-全部回归测试通过 → 整体需求功能完成。
+全部回归测试通过 → 进入阶段9进行最终验证。
 存在未通过 → 返回阶段7修复，修复后再次回归。
 
 完成后生成 `docs/workflow/delivery-report.md` + `docs/workflow/delivery-report.json`。
 
-### 阶段完成检查点（最终交付）
+### 阶段完成检查点
 
 **本阶段完成后，执行以下检查点操作：**
 
@@ -1246,28 +1535,241 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
     "docs/workflow/delivery-report.md",
     "docs/workflow/delivery-report.json"
   ],
-  "workflow_complete": true,
-  "completed_at": "ISO-8601-timestamp"
+  "next_phase": 9
 }
 ```
 
-2. **保存进度到 progress.md：** 追加阶段 8 完成记录，标记整个工作流完成。
+2. **保存进度到 progress.md：** 追加阶段 8 完成记录。
 
 3. **保存到 memory：**
-创建 `memory/phase-8-completed.md`，记录最终交付结果。
+创建 `memory/phase-8-completed.md`，记录回归测试结果。
+
+4. **输出续接指令：**
+```
+[CLEAR_AND_CONTINUE]
+阶段 8 已完成：回归测试与交付
+回归测试全部通过
+下一阶段：阶段 9 - 最终验证（产品经理Agent）
+[/CLEAR_AND_CONTINUE]
+```
+
+
+---
+
+## 阶段 9：最终验证（产品经理Agent）
+
+### 9.1 为什么需要最终验证
+
+整个工作流经历了多个阶段和多次上下文清空，虽然每个阶段都有严格的检查点，但可能存在以下问题：
+
+- 需求理解偏差：在漫长的开发过程中，对用户原始需求的理解可能发生偏移
+- 功能遗漏：某些用户期望的隐性需求可能未被显式记录
+- 细节不符：核心功能实现了，但与用户期望的细节存在差异
+- 场景覆盖不足：用户考虑的某些特殊场景未被纳入
+
+**只有产品经理Agent对照用户原始需求进行全面验证，才能确保最终交付真正符合用户的初始意图。**
+
+### 9.2 验证流程
+
+**步骤1：读取原始需求**
+
+读取以下文件获取用户的原始需求：
+- `docs/workflow/original-request.md` - 用户原始输入
+- `docs/workflow/original-request.json` - 结构化的核心意图和验证要点
+- `memory/original-request.md` - 备份（如果 docs 文件不存在）
+
+**步骤2：对照当前项目功能进行全面验证**
+
+以产品经理Agent的身份，从以下维度进行验证：
+
+**A. 核心功能完整性验证**
+对照原始需求中的"核心意图提取"和"验证要点"：
+- 原始需求中提到的每个功能点是否都已实现？
+- 用户期望的核心场景是否都能走通？
+- 是否有遗漏的功能或场景？
+
+**B. 功能实现质量验证**
+- 实现的功能是否达到用户的期望效果？
+- 交互流程是否符合用户的预期？
+- 数据处理逻辑是否满足用户的要求？
+
+**C. 约束条件验证**
+对照原始需求中的"关键约束"：
+- 用户提到的约束条件（时间、成本、技术限制等）是否都遵守了？
+- 是否有违背用户约束的实现？
+
+**D. 期望成果验证**
+对照原始需求中的"期望成果"：
+- 用户期望交付的成果是否都已完成？
+- 是否有超出用户期望的额外功能（可能是好的，但需要确认）？
+- 是否有低于用户期望的地方？
+
+**步骤3：生成验证报告**
+
+将验证结果写入 `docs/workflow/final-validation-report.md` 和 `final-validation-report.json`：
+
+```markdown
+# 最终验证报告
+
+## 验证信息
+- 验证时间：[ISO-8601]
+- 验证人：产品经理Agent
+- 原始需求来源：docs/workflow/original-request.md
+
+## 验证结果
+
+### 核心功能完整性
+- [x] 核心功能点1 - 已实现，符合预期
+- [x] 核心功能点2 - 已实现，符合预期
+- [ ] 核心功能点3 - 未实现，需要补充
+
+### 功能实现质量
+- 功能A：质量符合预期
+- 功能B：质量部分符合预期，需要优化[具体描述]
+
+### 约束条件
+- 约束1：已遵守
+- 约束2：已遵守
+
+### 期望成果
+- 期望1：已达成
+- 期望2：已达成
+
+## 发现的问题
+
+### 遗漏的功能
+1. [功能描述] - 原因：[说明] - 修复建议：[建议]
+
+### 不符的实现
+1. [功能描述] - 预期：[用户期望] - 实际：[当前实现] - 修复建议：[建议]
+
+### 其他问题
+1. [问题描述] - 严重程度：[P0/P1/P2] - 修复建议：[建议]
+
+## 验证结论
+[ 通过 / 未通过 ]
+
+## 下一步行动
+[ 如果通过：输出 WORKFLOW_COMPLETE ]
+[ 如果未通过：重新从阶段1开始梳理 ]
+```
+
+### 9.3 验证通过的条件
+
+**验证通过**需要满足以下所有条件：
+- 所有核心功能点都已实现
+- 所有核心功能点都符合用户期望
+- 关键约束条件都已遵守
+- 期望成果都已达成
+- 没有P0或P1级别的遗漏或偏差
+- 不存在与用户原始意图严重不符的实现
+
+### 9.4 验证未通过的处理
+
+如果验证未通过，执行以下操作：
+
+1. **更新原始需求记录**
+   在 `docs/workflow/original-request.json` 中更新：
+   ```json
+   {
+     "is_restart": true,
+     "restart_count": 1,
+     "last_restart_reason": "验证未通过：[具体原因]",
+     "validation_issues": [
+       {
+         "type": "遗漏/不符/质量",
+         "description": "问题描述",
+         "severity": "P0/P1/P2",
+         "suggestion": "修复建议"
+       }
+     ]
+   }
+   ```
+
+2. **更新 progress.json**
+   ```json
+   {
+     "current_phase": 1,
+     "phase_name": "需求分析（重新梳理）",
+     "status": "in_progress",
+     "restart_count": 1,
+     "last_validation": "未通过",
+     "validation_report": "docs/workflow/final-validation-report.md",
+     "next_phase": 2
+   }
+   ```
+
+3. **输出重启指令**
+   ```
+   [RESTART_WORKFLOW]
+   阶段 9 验证未通过
+   原因：[验证未通过的具体原因]
+   需要重新从阶段 1 开始梳理需求
+   重启次数：[N]
+   [/RESTART_WORKFLOW]
+   ```
+
+4. **系统处理重启**
+   - 系统检测到 `[RESTART_WORKFLOW]` 指令
+   - 执行 `/clear` 命令清空上下文
+   - 自动重新触发 `coral-workflow` 技能
+   - 技能读取 progress.json，发现当前阶段是 1（重新梳理）
+   - 从阶段1重新开始，但保留原始需求和验证报告作为参考
+
+5. **重启后的执行**
+   - 阶段1-8重新执行，但结合原始需求和验证报告
+   - 阶段9再次验证
+   - 重复直到验证通过
+
+### 9.5 防止无限重启
+
+**最大重启次数限制**：最多允许重启 3 次
+- 如果第3次重启后验证仍未通过，停止自动重启
+- 输出报告给用户，让用户决策：
+  - 是否继续手动调整需求
+  - 是否接受当前实现
+  - 是否需要人工介入
+
+**记录每次重启的原因和改进措施**，存入 `docs/workflow/restart-history.md`。
+
+### 阶段完成检查点（验证通过）
+
+**验证通过后，执行以下检查点操作：**
+
+1. **保存进度到 progress.json：**
+```json
+{
+  "current_phase": 9,
+  "phase_name": "最终验证",
+  "status": "completed",
+  "validation_result": "通过",
+  "validation_report": "docs/workflow/final-validation-report.md",
+  "workflow_complete": true,
+  "completed_at": "ISO-8601-timestamp",
+  "total_phases": 9,
+  "restart_count": 0
+}
+```
+
+2. **保存进度到 progress.md：** 追加阶段 9 完成记录，标记整个工作流完成。
+
+3. **保存到 memory：**
+创建 `memory/phase-9-completed.md`，记录验证结果。
 
 4. **输出完成指令（无续接，工作流结束）：**
 ```
 [WORKFLOW_COMPLETE]
-阶段 8 已完成：回归测试与交付
-回归测试全部通过，工作流完成！
+阶段 9 已完成：最终验证
+验证结果：通过
+最终产品已完全符合用户原始意图！
+原始需求：docs/workflow/original-request.md
+验证报告：docs/workflow/final-validation-report.md
 交付报告：docs/workflow/delivery-report.md
-所有阶段已完成，项目已交付。
+所有阶段已完成，项目已正式交付。
 [/WORKFLOW_COMPLETE]
 ```
 
-**注意**：阶段 8 是最终交付，输出 `[WORKFLOW_COMPLETE]` 后不再清空上下文和继续。
-
+**注意**：阶段 9 是真正的工作流终点。只有在这里验证通过，才意味着项目真正完成。阶段 8 只是技术层面的测试通过，阶段 9 才是产品层面的验证通过。
 
 ---
 
@@ -1331,7 +1833,10 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 ### 恢复流程
 
-当技能重新触发且检测到 `docs/workflow/progress.json` 存在时（自动续接模式）：
+当技能重新触发且检测到 `docs/workflow/progress.json` 存在时：
+
+#### 场景A：正常续接（current_phase < 9）
+
 1. 读取 progress.json 获取结构化进度（current_phase 字段确定断点）
 2. 读取 progress.md 获取详细上下文
 3. 读取 memory 文件获取关键决策索引
@@ -1344,7 +1849,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 继续执行阶段 5：任务拆分与分配（项目经理视角）
 ─────────────────────
 前置阶段已完成：
-  ✅ 阶段 0 - 项目模式识别
+  ✅ 阶段 0 - 项目模式识别与原始需求捕获
   ✅ 阶段 1 - 需求分析
   ✅ 阶段 2 - UI/UX设计
   ✅ 阶段 3 - 逻辑梳理与技术方案
@@ -1352,7 +1857,66 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 ─────────────────────
 ```
 
-**注意**：续接模式下的输出应简洁，避免重复显示已完成的阶段详情。
+#### 场景B：重启模式（current_phase = 1, restart_count > 0）
+
+1. 读取 progress.json 获取结构化进度
+2. 读取 `docs/workflow/original-request.md` 获取用户原始需求（不可变）
+3. 读取 `docs/workflow/final-validation-report.md` 获取上轮验证未通过的原因
+4. 读取 `docs/workflow/restart-history.md` 获取历史重启记录
+5. 输出重启续接信息："检测到上轮验证未通过，重新梳理需求（第 [X] 次重启）"
+6. 从阶段1重新开始，但重点关注上轮验证发现的问题
+7. 阶段1需求分析时，必须：
+   - 基于原始需求重新梳理
+   - 参考上轮验证报告中的问题
+   - 确保新的 PRD 解决所有验证问题
+
+**示例重启输出：**
+```
+检测到上轮验证未通过，重新梳理需求（第 1 次重启）
+───────────────────────────────────────
+重启原因：阶段9验证未通过
+  - 核心功能点3未实现
+  - 功能A与用户期望不符
+───────────────────────────────────────
+原始需求：docs/workflow/original-request.md
+上次验证报告：docs/workflow/final-validation-report.md
+───────────────────────────────────────
+开始阶段 1：需求分析（产品经理视角）
+```
+
+#### 场景C：重启达到上限（restart_count >= 3）
+
+1. 读取 progress.json 确认已达到最大重启次数
+2. 读取所有验证报告
+3. 输出详细报告给用户
+4. 请求用户决策：
+   - 是否接受当前实现
+   - 是否继续手动调整需求
+   - 是否需要人工介入
+
+**示例输出：**
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+重启已达上限（3次），需要您的决策
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+历史验证报告：
+1. 第1次验证：发现2个P0问题
+2. 第2次验证：发现1个P0问题，1个P1问题
+3. 第3次验证：发现1个P1问题
+
+当前状态：
+- 所有P0问题已修复
+- 仍有1个P1问题：[问题描述]
+
+请选择：
+1. 接受当前实现，项目交付
+2. 手动调整需求后继续
+3. 需要人工介入
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**注意**：续接模式下的输出应简洁，避免重复显示已完成的阶段详情。重启模式下应重点说明原因和需要解决的问题。
 
 ---
 
@@ -1381,3 +1945,10 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 21. **样式验证必做** — 阶段6完成后必须进行样式验证，检查布局、对齐、间距、颜色、字体、交互状态，P0问题必须修复后才能进入功能测试
 22. **样式分级处理** — 样式问题按严重程度分级（P0严重/P1中等/P2轻微），P0阻塞测试，P1/P2记录为待优化项不阻塞
 23. **设计稿对照** — 样式验证必须对照 docs/workflow/design-specs/ 中的设计稿，确保实现与设计一致
+24. **原始需求不可改** — 阶段0保存的原始需求（docs/workflow/original-request.md）一经保存绝不允许修改，作为阶段9验证的唯一依据
+25. **验证必做** — 阶段8完成后必须进入阶段9进行产品经理Agent的最终验证，只有验证通过才算真正完成
+26. **验证不过必重启** — 阶段9验证未通过时，必须输出 `[RESTART_WORKFLOW]` 指令，从阶段1重新梳理需求
+27. **重启限三次** — 最多允许重启3次，超过后停止自动重启，请求用户决策（接受/调整/人工介入）
+28. **验证对照原始** — 阶段9验证必须对照阶段0保存的原始需求，不是对照PRD或设计稿
+29. **重启必看报告** — 重启时必须读取上次验证报告（docs/workflow/final-validation-report.md），重点关注未通过的原因
+30. **最终才算完成** — 只有阶段9验证通过并输出 `[WORKFLOW_COMPLETE]` 后，工作流才算真正完成
