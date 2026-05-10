@@ -22,22 +22,33 @@ description: |
 
 ### 执行流程
 
-每次技能触发时，首先检查是否存在 `docs/workflow/progress.json`：
+每次技能触发时，首先检查是否存在进行中的工作流：
 
-**如果存在（续接模式）：**
-1. 读取 `docs/workflow/progress.json` 获取当前阶段和进度
-2. 读取 `docs/workflow/progress.md` 获取详细上下文
-3. 读取 memory 文件获取关键决策索引
-4. 检查 `restart_count` 和 `last_validation` 字段：
+**检查步骤：**
+1. 扫描 `docs/workflow/` 下所有子目录，查找包含 `progress.json` 的目录
+2. 兼容旧版：如果 `docs/workflow/progress.json` 直接存在于 workflow 根目录（非子目录中），将其迁移到 `docs/workflow/legacy/` 下，然后进入续接模式
+3. 根据扫描结果决定后续行为：
+
+**如果找到1个进行中的任务（续接模式）：**
+1. 从目录名提取 `<task-slug>`
+2. 读取 `docs/workflow/<task-slug>/progress.json` 获取当前阶段和进度
+3. 读取 `docs/workflow/<task-slug>/progress.md` 获取详细上下文
+4. 读取 memory 文件获取关键决策索引
+5. 检查 `restart_count` 和 `last_validation` 字段：
    - 如果 `last_validation` 为 "未通过"，输出："检测到上轮验证未通过，正在重新梳理需求..."
    - 输出续接信息："继续执行阶段 [N]：[阶段名称]（第 [X] 次重启）"
-5. 从断点阶段开始执行，跳过所有已完成的阶段
-6. 读取 `docs/workflow/final-validation-report.md`（如果存在）获取上轮验证的问题列表
-7. 读取 `docs/workflow/restart-history.md`（如果存在）获取历史重启记录
+6. 从断点阶段开始执行，跳过所有已完成的阶段
+7. 读取 `docs/workflow/<task-slug>/final-validation-report.md`（如果存在）获取上轮验证的问题列表
+8. 读取 `docs/workflow/<task-slug>/restart-history.md`（如果存在）获取历史重启记录
 
-**如果不存在（新项目模式）：**
+**如果找到多个进行中的任务：**
+1. 列出所有进行中的任务及其阶段信息
+2. 使用 AskUserQuestion 让用户选择要续接的任务，或选择开始新任务
+3. 根据用户选择进入续接模式或新项目模式
+
+**如果没有找到进行中的任务（新项目模式）：**
 1. 进入 阶段0：项目模式识别 + 原始需求捕获
-2. 创建 `docs/workflow/` 目录结构
+2. 生成任务 slug 并创建 `docs/workflow/<task-slug>/` 目录结构
 3. 初始化空的 `progress.json` 和 `progress.md`
 
 ### 自动清空机制
@@ -45,9 +56,9 @@ description: |
 **每个阶段完成后，技能会自动执行以下操作：**
 
 1. **保存状态** — 将当前阶段的所有状态保存到：
-   - `docs/workflow/progress.json`（结构化数据）
-   - `docs/workflow/progress.md`（人类可读）
-   - `memory/phase-{N}-completed.md`（关键决策索引）
+   - `docs/workflow/<task-slug>/progress.json`（结构化数据）
+   - `docs/workflow/<task-slug>/progress.md`（人类可读）
+   - `memory/<task-slug>-phase-{N}-completed.md`（关键决策索引）
 
 2. **输出续接指令** — 输出格式化的续接指令：
    ```
@@ -114,6 +125,34 @@ description: |
 
 ---
 
+## 工作流目录规范
+
+**每个需求任务使用独立的文档目录**，避免不同任务的产出互相干扰。
+
+目录格式：`docs/workflow/<task-slug>/`
+
+- `<task-slug>` 是阶段0根据用户需求生成的短标识符（小写英文 + 连字符，如 `user-management`、`data-export`、`order-system`）
+- slug 从用户需求的核心意图中提取，简短且能区分不同任务
+- 同一任务的所有阶段产出都写入该目录下的文件
+
+**示例目录结构：**
+```
+docs/workflow/
+├── user-management/          ← 任务1
+│   ├── progress.json
+│   ├── original-request.md
+│   ├── prd.md
+│   └── ...
+├── data-export/              ← 任务2
+│   ├── progress.json
+│   ├── original-request.md
+│   └── ...
+```
+
+**所有文档路径均基于 `docs/workflow/<task-slug>/`**，本文档中出现的 `<task-slug>` 均指当前任务的 slug 值，该值保存在 `progress.json` 的 `task_slug` 字段中，续接时从中读取。
+
+---
+
 ## 阶段总览
 
 ```
@@ -146,13 +185,33 @@ description: |
   └─ 验证未通过 → 重新从阶段1开始梳理，直到验证通过为止
 ```
 
-每个阶段完成时，将进度写入 `docs/workflow/progress.json`（结构化）和 `docs/workflow/progress.md`（可读），并在 memory 中记录关键状态，实现双保险上下文管理。
+每个阶段完成时，将进度写入 `docs/workflow/<task-slug>/progress.json`（结构化）和 `docs/workflow/<task-slug>/progress.md`（可读），并在 memory 中记录关键状态，实现双保险上下文管理。
 
 ---
 
 ## 阶段 0：项目模式识别 + 原始需求捕获
 
-本阶段有两个核心任务：识别项目模式，以及捕获并持久化保存用户的原始需求。
+本阶段有三个核心任务：生成任务标识、识别项目模式，以及捕获并持久化保存用户的原始需求。
+
+### 0.0 任务标识生成
+
+**为什么需要任务标识：** 每个需求任务必须有独立的工作目录，避免不同任务的产出互相干扰。任务 slug 决定了所有文档的存放路径。
+
+**执行步骤：**
+
+1. **分析用户需求的核心意图**，从中提取一个简短的英文标识符
+2. **slug 格式要求：** 小写字母 + 连字符，2-4个单词，能区分不同任务
+3. **slug 生成规则：** 从需求的核心业务对象或功能模块中提取
+
+**示例：**
+- "帮我实现用户管理模块" → `user-management`
+- "开发数据导出功能" → `data-export`
+- "做一个订单系统" → `order-system`
+- "给已有项目添加权限控制" → `permission-control`
+
+4. **检查 slug 是否已存在：** 如果 `docs/workflow/<task-slug>/` 目录已存在，在 slug 后追加数字（如 `user-management-2`）
+5. **创建目录：** `docs/workflow/<task-slug>/`
+6. **将 slug 保存到所有后续文件路径中**，progress.json 中必须包含 `task_slug` 字段
 
 ### 0.1 项目模式识别
 
@@ -162,7 +221,7 @@ description: |
 
 **模式 B — 已有项目迭代：** 存在运行中的代码库。需额外产出：当前项目规范文档（编码规范、目录结构、组件规范、接口规范、UI风格指南），读取 `references/project-spec.md`（如果存在）。
 
-**执行：** 使用 AskUserQuestion 确认项目模式。若为模式B，先分析现有项目代码结构生成规范文档，存入 `docs/workflow/project-spec.md`。
+**执行：** 使用 AskUserQuestion 确认项目模式。若为模式B，先分析现有项目代码结构生成规范文档，存入 `docs/workflow/<task-slug>/project-spec.md`。
 
 ### 0.2 原始需求捕获（关键步骤）
 
@@ -180,7 +239,7 @@ description: |
    - 记录用户提到的任何偏好、参考、目标等
 
 2. **保存到持久化文件**
-   创建 `docs/workflow/original-request.md`，格式如下：
+   创建 `docs/workflow/<task-slug>/original-request.md`，格式如下：
 
    ```markdown
    # 用户原始需求
@@ -210,7 +269,7 @@ description: |
    ```
 
 3. **保存 JSON 格式**（便于 AI 读取）
-   创建 `docs/workflow/original-request.json`：
+   创建 `docs/workflow/<task-slug>/original-request.json`：
 
    ```json
    {
@@ -234,7 +293,7 @@ description: |
    ```
 
 4. **保存到 memory**
-   创建 `memory/original-request.md`，作为备份，确保即使 docs 目录被删除也能恢复原始需求。
+   创建 `memory/<task-slug>-original-request.md`，作为备份，确保即使 docs 目录被删除也能恢复原始需求。
 
 **重要原则**：
 - 原始需求一经保存，**绝不允许修改**
@@ -248,6 +307,7 @@ description: |
 1. **保存进度到 progress.json：**
 ```json
 {
+  "task_slug": "user-management",
   "current_phase": 0,
   "phase_name": "项目模式识别与原始需求捕获",
   "status": "completed",
@@ -255,9 +315,9 @@ description: |
   "original_request_captured": true,
   "restart_count": 0,
   "output_files": [
-    "docs/workflow/project-spec.md",
-    "docs/workflow/original-request.md",
-    "docs/workflow/original-request.json"
+    "docs/workflow/<task-slug>/project-spec.md",
+    "docs/workflow/<task-slug>/original-request.md",
+    "docs/workflow/<task-slug>/original-request.json"
   ],
   "next_phase": 1
 }
@@ -275,23 +335,23 @@ description: |
 **捕获时间**：[时间戳]
 
 ### 产出文件
-- `docs/workflow/project-spec.md`
-- `docs/workflow/original-request.md` - 用户原始需求（不可修改）
-- `docs/workflow/original-request.json` - 原始需求结构化数据
+- `docs/workflow/<task-slug>/project-spec.md`
+- `docs/workflow/<task-slug>/original-request.md` - 用户原始需求（不可修改）
+- `docs/workflow/<task-slug>/original-request.json` - 原始需求结构化数据
 
 ### 下一阶段
 阶段 1：需求分析（产品经理视角）
 ```
 
 3. **保存到 memory：**
-创建 `memory/phase-0-completed.md`，记录项目模式决策和原始需求摘要。
+创建 `memory/<task-slug>-phase-0-completed.md`，记录项目模式决策和原始需求摘要。
 
 4. **输出续接指令：**
 ```
 [CLEAR_AND_CONTINUE]
 阶段 0 已完成：项目模式识别与原始需求捕获
 项目模式：[模式A/模式B]
-原始需求已保存到 docs/workflow/original-request.md
+原始需求已保存到 docs/workflow/<task-slug>/original-request.md
 下一阶段：阶段 1 - 需求分析（产品经理视角）
 [/CLEAR_AND_CONTINUE]
 ```
@@ -316,7 +376,7 @@ description: |
 
 ### 1.2 产出 PRD 文档
 
-需求澄清完成后，生成结构化 PRD。模板见 `references/prd-template.md`，保存到 `docs/workflow/prd.md` + `docs/workflow/prd.json`。
+需求澄清完成后，生成结构化 PRD。模板见 `references/prd-template.md`，保存到 `docs/workflow/<task-slug>/prd.md` + `docs/workflow/<task-slug>/prd.json`。
 
 ### 1.3 产出原型图
 
@@ -326,7 +386,7 @@ description: |
 - 标注页面跳转关系
 - 模式B需标注与现有页面的关联
 
-保存到 `docs/workflow/prototype/index.html`。
+保存到 `docs/workflow/<task-slug>/prototype/index.html`。
 
 ### 阶段完成检查点
 
@@ -339,9 +399,9 @@ description: |
   "phase_name": "需求分析",
   "status": "completed",
   "output_files": [
-    "docs/workflow/prd.md",
-    "docs/workflow/prd.json",
-    "docs/workflow/prototype/index.html"
+    "docs/workflow/<task-slug>/prd.md",
+    "docs/workflow/<task-slug>/prd.json",
+    "docs/workflow/<task-slug>/prototype/index.html"
   ],
   "next_phase": 2
 }
@@ -350,7 +410,7 @@ description: |
 2. **保存进度到 progress.md：** 追加阶段 1 完成记录。
 
 3. **保存到 memory：**
-创建 `memory/phase-1-completed.md`，记录核心需求和关键决策。
+创建 `memory/<task-slug>-phase-1-completed.md`，记录核心需求和关键决策。
 
 4. **输出续接指令：**
 ```
@@ -397,17 +457,17 @@ description: |
 - "{参考产品名} design system" — 用户提到的参考产品的设计体系
 ```
 
-调研结果整理为简报，保存到 `docs/workflow/design-research.md`：
+调研结果整理为简报，保存到 `docs/workflow/<task-slug>/design-research.md`：
 - 3-5个优秀设计案例的截图/链接和亮点分析
 - 当前趋势总结（如：大圆角、玻璃态、渐变、微交互等哪些适合本项目）
 - 与用户偏好的匹配分析
 
 ### 2.3 多方案设计探索
 
-基于用户偏好 + 行业调研，产出 **2-3个不同方向**的设计方案，每个方案以 HTML 页面呈现，保存到 `docs/workflow/design-options/`：
+基于用户偏好 + 行业调研，产出 **2-3个不同方向**的设计方案，每个方案以 HTML 页面呈现，保存到 `docs/workflow/<task-slug>/design-options/`：
 
 ```
-docs/workflow/design-options/
+docs/workflow/<task-slug>/design-options/
 ├── option-A.html    # 方案A（如：简约专业风）
 ├── option-B.html    # 方案B（如：活力年轻风）
 └── option-C.html    # 方案C（如：沉稳商务风）
@@ -442,14 +502,14 @@ docs/workflow/design-options/
 - 也可以混搭：从方案A取配色，从方案B取布局，从方案C取交互风格
 - 补充修改意见
 
-用户选定后，记录选择结果和修改意见到 `docs/workflow/design-decision.md` + `design-decision.json`。
+用户选定后，记录选择结果和修改意见到 `docs/workflow/<task-slug>/design-decision.md` + `design-decision.json`。
 
 ### 2.5 详细设计稿产出
 
 基于用户选定的方案，逐模块产出详细 HTML 设计稿。每个功能模块一个独立 HTML 文件：
 
 ```
-docs/workflow/design-specs/
+docs/workflow/<task-slug>/design-specs/
 ├── module-attendance.html    # 考勤管理模块
 ├── module-leave.html         # 请假管理模块
 ├── module-overtime.html      # 加班管理模块
@@ -535,9 +595,9 @@ docs/workflow/design-specs/
   "status": "completed",
   "design_decision": "用户选定的方案",
   "output_files": [
-    "docs/workflow/design-options/",
-    "docs/workflow/design-decision.md",
-    "docs/workflow/design-specs/"
+    "docs/workflow/<task-slug>/design-options/",
+    "docs/workflow/<task-slug>/design-decision.md",
+    "docs/workflow/<task-slug>/design-specs/"
   ],
   "next_phase": 3
 }
@@ -546,7 +606,7 @@ docs/workflow/design-specs/
 2. **保存进度到 progress.md：** 追加阶段 2 完成记录，记录选定的设计方向。
 
 3. **保存到 memory：**
-创建 `memory/phase-2-completed.md`，记录设计决策和设计规范关键点。
+创建 `memory/<task-slug>-phase-2-completed.md`，记录设计决策和设计规范关键点。
 
 4. **输出续接指令：**
 ```
@@ -570,7 +630,7 @@ docs/workflow/design-specs/
 - 状态流转图（核心业务对象的状态机）
 - 异常流程图（异常分支处理路径）
 
-使用 Mermaid 语法写入 `docs/workflow/flow-diagrams.md`。
+使用 Mermaid 语法写入 `docs/workflow/<task-slug>/flow-diagrams.md`。
 
 ### 3.2 模块交互时序图
 
@@ -596,7 +656,7 @@ sequenceDiagram
 
 ### 3.3 集成契约定义
 
-这是并行开发能成功拼装的核心。在拆分任务之前，必须先定义所有跨模块的接口契约，写入 `docs/workflow/integration-contract.md` + `integration-contract.json`：
+这是并行开发能成功拼装的核心。在拆分任务之前，必须先定义所有跨模块的接口契约，写入 `docs/workflow/<task-slug>/integration-contract.md` + `integration-contract.json`：
 
 ```markdown
 # 集成契约
@@ -628,7 +688,7 @@ sequenceDiagram
 
 梳理中发现的疑问，必须列出并用 AskUserQuestion 向用户确认。未全部确认前不进入下一阶段。
 
-保存到 `docs/workflow/questions.md`，格式：
+保存到 `docs/workflow/<task-slug>/questions.md`，格式：
 
 | 序号 | 疑问描述 | 影响范围 | 建议 | 用户确认结果 |
 |------|---------|---------|------|------------|
@@ -638,7 +698,7 @@ sequenceDiagram
 
 针对每个技术难点，提供2-3个可选方案供用户选择（含实现思路、优缺点、工期评估）。推荐方案并说明理由，让用户做最终选择。
 
-保存到 `docs/workflow/tech-solutions.md` + `docs/workflow/tech-solutions.json`。
+保存到 `docs/workflow/<task-slug>/tech-solutions.md` + `docs/workflow/<task-slug>/tech-solutions.json`。
 
 ### 阶段完成检查点
 
@@ -651,12 +711,12 @@ sequenceDiagram
   "phase_name": "逻辑梳理与技术方案",
   "status": "completed",
   "output_files": [
-    "docs/workflow/flow-diagrams.md",
-    "docs/workflow/integration-contract.md",
-    "docs/workflow/integration-contract.json",
-    "docs/workflow/questions.md",
-    "docs/workflow/tech-solutions.md",
-    "docs/workflow/tech-solutions.json"
+    "docs/workflow/<task-slug>/flow-diagrams.md",
+    "docs/workflow/<task-slug>/integration-contract.md",
+    "docs/workflow/<task-slug>/integration-contract.json",
+    "docs/workflow/<task-slug>/questions.md",
+    "docs/workflow/<task-slug>/tech-solutions.md",
+    "docs/workflow/<task-slug>/tech-solutions.json"
   ],
   "questions_resolved": true,
   "next_phase": 4
@@ -666,7 +726,7 @@ sequenceDiagram
 2. **保存进度到 progress.md：** 追加阶段 3 完成记录，记录技术选型决策。
 
 3. **保存到 memory：**
-创建 `memory/phase-3-completed.md`，记录集成契约和关键技术决策。
+创建 `memory/<task-slug>-phase-3-completed.md`，记录集成契约和关键技术决策。
 
 4. **输出续接指令：**
 ```
@@ -684,7 +744,7 @@ sequenceDiagram
 
 基于 PRD 和流程图编写完整测试用例。这是开发的验收标准 — 开发的目标是让所有测试用例通过。
 
-模板见 `references/test-case-template.md`，保存到 `docs/workflow/test-cases.md` + `docs/workflow/test-cases.json`。
+模板见 `references/test-case-template.md`，保存到 `docs/workflow/<task-slug>/test-cases.md` + `docs/workflow/<task-slug>/test-cases.json`。
 
 ### 4.1 用例分类
 
@@ -748,8 +808,8 @@ sequenceDiagram
     "e2e": 0
   },
   "output_files": [
-    "docs/workflow/test-cases.md",
-    "docs/workflow/test-cases.json"
+    "docs/workflow/<task-slug>/test-cases.md",
+    "docs/workflow/<task-slug>/test-cases.json"
   ],
   "next_phase": 5
 }
@@ -758,7 +818,7 @@ sequenceDiagram
 2. **保存进度到 progress.md：** 追加阶段 4 完成记录，统计用例数量。
 
 3. **保存到 memory：**
-创建 `memory/phase-4-completed.md`，记录测试用例概览和关键验收标准。
+创建 `memory/<task-slug>-phase-4-completed.md`，记录测试用例概览和关键验收标准。
 
 4. **输出续接指令：**
 ```
@@ -806,7 +866,7 @@ sequenceDiagram
 
 ### 5.2 产出任务分配总表
 
-模板见 `references/task-assignment-template.md`，保存到 `docs/workflow/task-assignment.md` + `docs/workflow/task-assignment.json`。
+模板见 `references/task-assignment-template.md`，保存到 `docs/workflow/<task-slug>/task-assignment.md` + `docs/workflow/<task-slug>/task-assignment.json`。
 
 每条任务包含：任务ID、名称、具体描述、开发实现细节、指派开发者、前置依赖、进度状态（待办/进行中/完成）、开始时间、完成时间。
 
@@ -831,8 +891,8 @@ sequenceDiagram
     "completed": 0
   },
   "output_files": [
-    "docs/workflow/task-assignment.md",
-    "docs/workflow/task-assignment.json"
+    "docs/workflow/<task-slug>/task-assignment.md",
+    "docs/workflow/<task-slug>/task-assignment.json"
   ],
   "next_phase": 6
 }
@@ -841,7 +901,7 @@ sequenceDiagram
 2. **保存进度到 progress.md：** 追加阶段 5 完成记录，列出任务概览。
 
 3. **保存到 memory：**
-创建 `memory/phase-5-completed.md`，记录任务分配概览和依赖关系。
+创建 `memory/<task-slug>-phase-5-completed.md`，记录任务分配概览和依赖关系。
 
 4. **输出续接指令：**
 ```
@@ -861,13 +921,13 @@ sequenceDiagram
 
 本阶段开始，将以下产出交接给 `coral-frontend` 技能执行实际编码：
 
-- `docs/workflow/prd.json` — 需求文档
-- `docs/workflow/design-spec.json` — 设计规范
-- `docs/workflow/flow-diagrams.md` — 逻辑流程
-- `docs/workflow/integration-contract.json` — 集成契约（新增，确保接口一致）
-- `docs/workflow/tech-solutions.json` — 技术方案
-- `docs/workflow/test-cases.json` — 测试用例
-- `docs/workflow/task-assignment.json` — 任务分配表
+- `docs/workflow/<task-slug>/prd.json` — 需求文档
+- `docs/workflow/<task-slug>/design-spec.json` — 设计规范
+- `docs/workflow/<task-slug>/flow-diagrams.md` — 逻辑流程
+- `docs/workflow/<task-slug>/integration-contract.json` — 集成契约（新增，确保接口一致）
+- `docs/workflow/<task-slug>/tech-solutions.json` — 技术方案
+- `docs/workflow/<task-slug>/test-cases.json` — 测试用例
+- `docs/workflow/<task-slug>/task-assignment.json` — 任务分配表
 
 调用 `coral-frontend` 技能时，将任务分配表中的任务逐个传入。coral-frontend 负责实际的代码实现、质量检测和风格检测。每个开发者 Agent 的 prompt 中必须包含集成契约，确保开发时遵守接口规范。
 
@@ -884,7 +944,7 @@ sequenceDiagram
 
 在启动 Agent 之前，主会话必须准备以下文件供 Agent 读取：
 ```
-docs/workflow/
+docs/workflow/<task-slug>/
 ├── agent-context/                 # Agent 上下文目录（每个 Agent 一份）
 │   ├── developer-A.json         # 开发者A的专属上下文
 │   ├── developer-B.json         # 开发者B的专属上下文
@@ -903,16 +963,16 @@ docs/workflow/
 
 1. **准备 Agent 上下文文件**（主会话执行）：
 ```json
-// docs/workflow/agent-context/developer-A.json
+// docs/workflow/<task-slug>/agent-context/developer-A.json
 {
   "agent_name": "developer-A",
   "agent_role": "开发者",
   "assigned_tasks": ["T-002", "T-005"],
-  "integration_contract_path": "docs/workflow/integration-contract.json",
-  "prd_path": "docs/workflow/prd.json",
-  "tech_solutions_path": "docs/workflow/tech-solutions.json",
-  "progress_file": "docs/workflow/task-assignment.json",
-  "heartbeat_file": "docs/workflow/agent-heartbeat/developer-A.heartbeat",
+  "integration_contract_path": "docs/workflow/<task-slug>/integration-contract.json",
+  "prd_path": "docs/workflow/<task-slug>/prd.json",
+  "tech_solutions_path": "docs/workflow/<task-slug>/tech-solutions.json",
+  "progress_file": "docs/workflow/<task-slug>/task-assignment.json",
+  "heartbeat_file": "docs/workflow/<task-slug>/agent-heartbeat/developer-A.heartbeat",
   "timeout_minutes": 30
 }
 ```
@@ -925,17 +985,17 @@ Agent({
   prompt: "你是开发者A。请严格按照以下步骤执行：
 
 步骤1：读取你的上下文文件
-  读取 docs/workflow/agent-context/developer-A.json，获取你的任务、契约和配置。
+  读取 docs/workflow/<task-slug>/agent-context/developer-A.json，获取你的任务、契约和配置。
 
 步骤2：启动心跳机制
-  每隔5分钟更新一次心跳文件 docs/workflow/agent-heartbeat/developer-A.heartbeat，
+  每隔5分钟更新一次心跳文件 docs/workflow/<task-slug>/agent-heartbeat/developer-A.heartbeat，
   写入当前时间戳和正在执行的任务ID。格式：{"heartbeat_at": "ISO-8601", "current_task": "T-002"}
 
 步骤3：读取共享上下文
-  读取 docs/workflow/integration-contract.json 中的接口契约
-  读取 docs/workflow/prd.json 了解需求
-  读取 docs/workflow/tech-solutions.json 了解技术方案
-  读取 docs/workflow/design-specs/ 中的设计稿
+  读取 docs/workflow/<task-slug>/integration-contract.json 中的接口契约
+  读取 docs/workflow/<task-slug>/prd.json 了解需求
+  读取 docs/workflow/<task-slug>/tech-solutions.json 了解技术方案
+  读取 docs/workflow/<task-slug>/design-specs/ 中的设计稿
 
 步骤4：逐个执行任务（每个任务完成后必须测试）
   对你的每个任务（如 T-002, T-005），按以下子流程执行：
@@ -974,13 +1034,13 @@ Agent({
   4.6 记录任务完成
       - 更新任务状态为"completed"
       - 写入完成时间
-      - 将测试结果和样式验证结果记录到 docs/workflow/agent-test-results/developer-A/[task-id].json
+      - 将测试结果和样式验证结果记录到 docs/workflow/<task-slug>/agent-test-results/developer-A/[task-id].json
   
   4.7 更新心跳
       写入 {"heartbeat_at": "ISO-8601", "current_task": "T-002", "sub_status": "completed"}
 
 步骤5：所有任务完成后更新全局进度
-  更新 docs/workflow/task-assignment.json 中所有任务的状态为"completed"
+  更新 docs/workflow/<task-slug>/task-assignment.json 中所有任务的状态为"completed"
 
 步骤6：停止心跳
   在心跳文件中写入 {"status": "completed", "completed_at": "ISO-8601"}
@@ -990,7 +1050,7 @@ Agent({
 - 必须严格遵守集成契约中的接口定义
 - 每个任务完成后必须通过 Playwright 测试和样式验证才能进入下一个任务
 - 测试失败或样式有问题时必须修复，不能跳过
-- 如果遇到无法解决的问题，写入 docs/workflow/agent-issues/developer-A.json"
+- 如果遇到无法解决的问题，写入 docs/workflow/<task-slug>/agent-issues/developer-A.json"
 })
 ```
 
@@ -1087,7 +1147,7 @@ test.describe('[Task-XXX] 任务名称', () => {
 **测试结果记录格式：**
 
 ```json
-// docs/workflow/agent-test-results/developer-A/T-002.json
+// docs/workflow/<task-slug>/agent-test-results/developer-A/T-002.json
 {
   "task_id": "T-002",
   "task_name": "任务名称",
@@ -1115,7 +1175,7 @@ test.describe('[Task-XXX] 任务名称', () => {
 - 启动 Agent 后，每隔 2 分钟检查一次心跳文件
 - 如果心跳文件超过 30 分钟未更新，判定为**卡死**
 - 卡死处理：尝试重新启动该 Agent，最多重试 1 次
-- 如果重试后仍卡死，标记任务为"failed"并记录到 docs/workflow/agent-failures/
+- 如果重试后仍卡死，标记任务为"failed"并记录到 docs/workflow/<task-slug>/agent-failures/
 
 **并行策略：**
 - 同一时刻可启动多个 Agent，每个代表一个开发者
@@ -1155,7 +1215,7 @@ for each agent:
 
 如果 Agent 卡死且重试后仍失败：
 1. 将相关任务状态标记为"failed"
-2. 记录失败信息到 `docs/workflow/agent-failures/{agent-name}.json`
+2. 记录失败信息到 `docs/workflow/<task-slug>/agent-failures/{agent-name}.json`
 3. 告知用户："Agent {agent-name} 执行失败，需要手动处理"
 4. 暂停后续依赖任务，等待用户决策
 
@@ -1242,8 +1302,8 @@ for each agent:
 
 2. **逐页验证**
    - 访问每个核心页面
-   - 对照设计稿（`docs/workflow/design-specs/`）检查
-   - 记录发现的问题到 `docs/workflow/style-issues.md`
+   - 对照设计稿（`docs/workflow/<task-slug>/design-specs/`）检查
+   - 记录发现的问题到 `docs/workflow/<task-slug>/style-issues.md`
 
 3. **记录样式问题格式**
    ```markdown
@@ -1275,7 +1335,7 @@ for each agent:
 
 #### 6.4.3 样式验证输出
 
-完成后生成 `docs/workflow/style-verification.md` + `style-verification.json`：
+完成后生成 `docs/workflow/<task-slug>/style-verification.md` + `style-verification.json`：
 
 ```json
 {
@@ -1403,7 +1463,7 @@ for each agent:
 2. **保存进度到 progress.md：** 追加阶段 6 完成记录，记录所有任务完成状态、集成拼装结果和样式验证结果。
 
 3. **保存到 memory：**
-创建 `memory/phase-6-completed.md`，记录开发完成情况、关键代码决策和样式验证摘要。
+创建 `memory/<task-slug>-phase-6-completed.md`，记录开发完成情况、关键代码决策和样式验证摘要。
 
 4. **输出续接指令：**
 ```
@@ -1446,14 +1506,14 @@ for each agent:
 ### 7.3 Bug 修复流程
 
 ```
-测试发现Bug → 记录到 docs/workflow/bugs.md
+测试发现Bug → 记录到 docs/workflow/<task-slug>/bugs.md
   → 指派给对应开发工程师（通过 Agent 工具启动修复 Agent）
     → 修复完成 → 通知测试 Agent 回归验证该用例
       → 通过 → 关闭Bug
       → 未通过 → 打回继续修复
 ```
 
-Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
+Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-slug>/bugs.json`。
 
 ### 阶段完成检查点
 
@@ -1472,8 +1532,8 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
   },
   "bugs_resolved": 0,
   "output_files": [
-    "docs/workflow/bugs.md",
-    "docs/workflow/bugs.json"
+    "docs/workflow/<task-slug>/bugs.md",
+    "docs/workflow/<task-slug>/bugs.json"
   ],
   "next_phase": 8
 }
@@ -1482,7 +1542,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 2. **保存进度到 progress.md：** 追加阶段 7 完成记录，记录测试结果和 Bug 修复情况。
 
 3. **保存到 memory：**
-创建 `memory/phase-7-completed.md`，记录测试结果摘要和遗留问题（如果有）。
+创建 `memory/<task-slug>-phase-7-completed.md`，记录测试结果摘要和遗留问题（如果有）。
 
 4. **输出续接指令：**
 ```
@@ -1514,7 +1574,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 全部回归测试通过 → 进入阶段9进行最终验证。
 存在未通过 → 返回阶段7修复，修复后再次回归。
 
-完成后生成 `docs/workflow/delivery-report.md` + `docs/workflow/delivery-report.json`。
+完成后生成 `docs/workflow/<task-slug>/delivery-report.md` + `docs/workflow/<task-slug>/delivery-report.json`。
 
 ### 阶段完成检查点
 
@@ -1532,8 +1592,8 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
     "total_issues": 0
   },
   "output_files": [
-    "docs/workflow/delivery-report.md",
-    "docs/workflow/delivery-report.json"
+    "docs/workflow/<task-slug>/delivery-report.md",
+    "docs/workflow/<task-slug>/delivery-report.json"
   ],
   "next_phase": 9
 }
@@ -1542,7 +1602,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 2. **保存进度到 progress.md：** 追加阶段 8 完成记录。
 
 3. **保存到 memory：**
-创建 `memory/phase-8-completed.md`，记录回归测试结果。
+创建 `memory/<task-slug>-phase-8-completed.md`，记录回归测试结果。
 
 4. **输出续接指令：**
 ```
@@ -1574,9 +1634,9 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 **步骤1：读取原始需求**
 
 读取以下文件获取用户的原始需求：
-- `docs/workflow/original-request.md` - 用户原始输入
-- `docs/workflow/original-request.json` - 结构化的核心意图和验证要点
-- `memory/original-request.md` - 备份（如果 docs 文件不存在）
+- `docs/workflow/<task-slug>/original-request.md` - 用户原始输入
+- `docs/workflow/<task-slug>/original-request.json` - 结构化的核心意图和验证要点
+- `memory/<task-slug>-original-request.md` - 备份（如果 docs 文件不存在）
 
 **步骤2：对照当前项目功能进行全面验证**
 
@@ -1606,7 +1666,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 **步骤3：生成验证报告**
 
-将验证结果写入 `docs/workflow/final-validation-report.md` 和 `final-validation-report.json`：
+将验证结果写入 `docs/workflow/<task-slug>/final-validation-report.md` 和 `final-validation-report.json`：
 
 ```markdown
 # 最终验证报告
@@ -1614,7 +1674,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 ## 验证信息
 - 验证时间：[ISO-8601]
 - 验证人：产品经理Agent
-- 原始需求来源：docs/workflow/original-request.md
+- 原始需求来源：docs/workflow/<task-slug>/original-request.md
 
 ## 验证结果
 
@@ -1669,7 +1729,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 如果验证未通过，执行以下操作：
 
 1. **更新原始需求记录**
-   在 `docs/workflow/original-request.json` 中更新：
+   在 `docs/workflow/<task-slug>/original-request.json` 中更新：
    ```json
    {
      "is_restart": true,
@@ -1694,7 +1754,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
      "status": "in_progress",
      "restart_count": 1,
      "last_validation": "未通过",
-     "validation_report": "docs/workflow/final-validation-report.md",
+     "validation_report": "docs/workflow/<task-slug>/final-validation-report.md",
      "next_phase": 2
    }
    ```
@@ -1730,7 +1790,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
   - 是否接受当前实现
   - 是否需要人工介入
 
-**记录每次重启的原因和改进措施**，存入 `docs/workflow/restart-history.md`。
+**记录每次重启的原因和改进措施**，存入 `docs/workflow/<task-slug>/restart-history.md`。
 
 ### 阶段完成检查点（验证通过）
 
@@ -1743,7 +1803,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
   "phase_name": "最终验证",
   "status": "completed",
   "validation_result": "通过",
-  "validation_report": "docs/workflow/final-validation-report.md",
+  "validation_report": "docs/workflow/<task-slug>/final-validation-report.md",
   "workflow_complete": true,
   "completed_at": "ISO-8601-timestamp",
   "total_phases": 9,
@@ -1754,7 +1814,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 2. **保存进度到 progress.md：** 追加阶段 9 完成记录，标记整个工作流完成。
 
 3. **保存到 memory：**
-创建 `memory/phase-9-completed.md`，记录验证结果。
+创建 `memory/<task-slug>-phase-9-completed.md`，记录验证结果。
 
 4. **输出完成指令（无续接，工作流结束）：**
 ```
@@ -1762,9 +1822,9 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 阶段 9 已完成：最终验证
 验证结果：通过
 最终产品已完全符合用户原始意图！
-原始需求：docs/workflow/original-request.md
-验证报告：docs/workflow/final-validation-report.md
-交付报告：docs/workflow/delivery-report.md
+原始需求：docs/workflow/<task-slug>/original-request.md
+验证报告：docs/workflow/<task-slug>/final-validation-report.md
+交付报告：docs/workflow/<task-slug>/delivery-report.md
 所有阶段已完成，项目已正式交付。
 [/WORKFLOW_COMPLETE]
 ```
@@ -1789,16 +1849,16 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 **检查点操作四步骤（技能执行）：**
 
-1. **保存结构化进度到 `docs/workflow/progress.json`**
+1. **保存结构化进度到 `docs/workflow/<task-slug>/progress.json`**
    - 包含：当前阶段、阶段状态、产出文件列表、下一阶段、关键统计数据
    - 这是续接时最可靠的信息源
 
-2. **保存可读进度到 `docs/workflow/progress.md`**
+2. **保存可读进度到 `docs/workflow/<task-slug>/progress.md`**
    - 包含：人类可读的进度总结、已完成阶段列表、关键决策记录
    - 方便用户直接查看进度
 
 3. **保存关键索引到 memory**
-   - 创建 `memory/phase-{N}-completed.md`
+   - 创建 `memory/<task-slug>-phase-{N}-completed.md`
    - 包含：该阶段的关键决策、重要输出、待处理事项
    - 防止 progress 文件遗漏时丢失关键上下文
 
@@ -1811,7 +1871,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 采用**项目文件 + memory** 双保险管理上下文：
 
-**1. 项目文件（详尽记录）：** 每个阶段完成时，将全量进度写入 `docs/workflow/progress.json` + `docs/workflow/progress.md`。这是续接时的主信息源。
+**1. 项目文件（详尽记录）：** 每个阶段完成时，将全量进度写入 `docs/workflow/<task-slug>/progress.json` + `docs/workflow/<task-slug>/progress.md`。这是续接时的主信息源。
 
 **2. Memory（关键索引）：** 将当前阶段、关键决策、待处理事项写入 `.claude/projects/` 下的 memory 文件。新会话自动加载，确保即使 progress 文件遗漏也能恢复关键状态。
 
@@ -1833,7 +1893,7 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 
 ### 恢复流程
 
-当技能重新触发且检测到 `docs/workflow/progress.json` 存在时：
+当技能重新触发且检测到 `docs/workflow/<task-slug>/progress.json` 存在时：
 
 #### 场景A：正常续接（current_phase < 9）
 
@@ -1860,9 +1920,9 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 #### 场景B：重启模式（current_phase = 1, restart_count > 0）
 
 1. 读取 progress.json 获取结构化进度
-2. 读取 `docs/workflow/original-request.md` 获取用户原始需求（不可变）
-3. 读取 `docs/workflow/final-validation-report.md` 获取上轮验证未通过的原因
-4. 读取 `docs/workflow/restart-history.md` 获取历史重启记录
+2. 读取 `docs/workflow/<task-slug>/original-request.md` 获取用户原始需求（不可变）
+3. 读取 `docs/workflow/<task-slug>/final-validation-report.md` 获取上轮验证未通过的原因
+4. 读取 `docs/workflow/<task-slug>/restart-history.md` 获取历史重启记录
 5. 输出重启续接信息："检测到上轮验证未通过，重新梳理需求（第 [X] 次重启）"
 6. 从阶段1重新开始，但重点关注上轮验证发现的问题
 7. 阶段1需求分析时，必须：
@@ -1878,8 +1938,8 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
   - 核心功能点3未实现
   - 功能A与用户期望不符
 ───────────────────────────────────────
-原始需求：docs/workflow/original-request.md
-上次验证报告：docs/workflow/final-validation-report.md
+原始需求：docs/workflow/<task-slug>/original-request.md
+上次验证报告：docs/workflow/<task-slug>/final-validation-report.md
 ───────────────────────────────────────
 开始阶段 1：需求分析（产品经理视角）
 ```
@@ -1944,11 +2004,11 @@ Bug 记录保存到 `docs/workflow/bugs.md` + `docs/workflow/bugs.json`。
 20. **Agent 文件隔离** — 每个 Agent 只操作分配给自己的文件，不触碰其他 Agent 的文件，通过共享文件（progress.json）协调进度
 21. **样式验证必做** — 阶段6完成后必须进行样式验证，检查布局、对齐、间距、颜色、字体、交互状态，P0问题必须修复后才能进入功能测试
 22. **样式分级处理** — 样式问题按严重程度分级（P0严重/P1中等/P2轻微），P0阻塞测试，P1/P2记录为待优化项不阻塞
-23. **设计稿对照** — 样式验证必须对照 docs/workflow/design-specs/ 中的设计稿，确保实现与设计一致
-24. **原始需求不可改** — 阶段0保存的原始需求（docs/workflow/original-request.md）一经保存绝不允许修改，作为阶段9验证的唯一依据
+23. **设计稿对照** — 样式验证必须对照 docs/workflow/<task-slug>/design-specs/ 中的设计稿，确保实现与设计一致
+24. **原始需求不可改** — 阶段0保存的原始需求（docs/workflow/<task-slug>/original-request.md）一经保存绝不允许修改，作为阶段9验证的唯一依据
 25. **验证必做** — 阶段8完成后必须进入阶段9进行产品经理Agent的最终验证，只有验证通过才算真正完成
 26. **验证不过必重启** — 阶段9验证未通过时，必须输出 `[RESTART_WORKFLOW]` 指令，从阶段1重新梳理需求
 27. **重启限三次** — 最多允许重启3次，超过后停止自动重启，请求用户决策（接受/调整/人工介入）
 28. **验证对照原始** — 阶段9验证必须对照阶段0保存的原始需求，不是对照PRD或设计稿
-29. **重启必看报告** — 重启时必须读取上次验证报告（docs/workflow/final-validation-report.md），重点关注未通过的原因
+29. **重启必看报告** — 重启时必须读取上次验证报告（docs/workflow/<task-slug>/final-validation-report.md），重点关注未通过的原因
 30. **最终才算完成** — 只有阶段9验证通过并输出 `[WORKFLOW_COMPLETE]` 后，工作流才算真正完成
