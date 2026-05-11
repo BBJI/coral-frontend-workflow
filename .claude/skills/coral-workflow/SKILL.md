@@ -172,9 +172,10 @@ docs/workflow/
   ↓
 阶段6: 开发执行（交接 coral-frontend）
   6.1 共享接口定义（T-001，最先执行）
-  6.2 并行开发（多个 Agent 并行）
+  6.2 并行开发（多个 Agent 并行，每个任务含控制台验证）
   6.3 集成拼装 + 冒烟测试（最后执行）
   6.4 样式验证（布局/对齐/间距/颜色/字体/交互）
+  6.5 控制台验证（全页面扫描，零错误零警告）
   ↓
 阶段7: 功能测试（测试工程师视角）→ 端到端优先 → 集成 → 功能
   ↓
@@ -1023,20 +1024,46 @@ Agent({
         * 间距和对齐
         * 交互状态（hover/active/disabled）
       - 截图保存到 tests/screenshots/[task-name]/
-  
-  4.5 检查测试和样式验证结果
-      如果有任何测试失败或样式问题：
+
+  4.5 浏览器控制台验证（每个任务必须执行）
+      使用 Playwright 捕获浏览器控制台输出，确保零错误零警告：
+      - 在访问页面之前，先注册控制台消息监听：
+        ```javascript
+        const consoleMessages = [];
+        page.on('console', msg => {
+          consoleMessages.push({ type: msg.type(), text: msg.text() });
+        });
+        page.on('pageerror', error => {
+          consoleMessages.push({ type: 'pageerror', text: error.message });
+        });
+        ```
+      - 执行该任务涉及的核心用户操作（点击、输入、导航等）
+      - 操作完成后检查 consoleMessages：
+        * 如果有 type 为 "error" 或 "pageerror" 的消息 → 必须修复
+        * 如果有 type 为 "warning" 的消息 → 必须修复
+        * 忽略第三方库内部的控制台消息（判断依据：消息堆栈指向 node_modules）
+      - 如果发现控制台错误或警告：
+        a. 分析错误/警告来源和原因
+        b. 修复代码问题
+        c. 重新运行控制台验证
+        d. 循环直到控制台零错误零警告
+      - 将控制台验证结果记录到任务测试结果中
+
+      为什么控制台验证必须在每个任务后执行：控制台错误和警告往往是功能缺陷的早期信号。一个未捕获的 warning 可能在后续集成时变成 error，一个被吞掉的 error 可能导致数据状态不一致。尽早发现并修复，成本远低于集成后排查。
+
+  4.6 检查测试、样式和控制台验证结果
+      如果有任何测试失败、样式问题或控制台错误/警告：
         - 分析失败原因
         - 修复代码问题
-        - 重新运行测试和样式验证
-        - 循环直到所有测试通过、所有样式问题修复
-  
-  4.6 记录任务完成
+        - 重新运行测试、样式验证和控制台验证
+        - 循环直到所有测试通过、所有样式问题修复、控制台零错误零警告
+
+  4.7 记录任务完成
       - 更新任务状态为"completed"
       - 写入完成时间
-      - 将测试结果和样式验证结果记录到 docs/workflow/<task-slug>/agent-test-results/developer-A/[task-id].json
-  
-  4.7 更新心跳
+      - 将测试结果、样式验证结果和控制台验证结果记录到 docs/workflow/<task-slug>/agent-test-results/developer-A/[task-id].json
+
+  4.8 更新心跳
       写入 {"heartbeat_at": "ISO-8601", "current_task": "T-002", "sub_status": "completed"}
 
 步骤5：所有任务完成后更新全局进度
@@ -1048,13 +1075,13 @@ Agent({
 重要提醒：
 - 你是独立 session，只能通过文件获取上下文
 - 必须严格遵守集成契约中的接口定义
-- 每个任务完成后必须通过 Playwright 测试和样式验证才能进入下一个任务
-- 测试失败或样式有问题时必须修复，不能跳过
+- 每个任务完成后必须通过 Playwright 测试、样式验证和控制台验证才能进入下一个任务
+- 测试失败、样式有问题或控制台有错误/警告时必须修复，不能跳过
 - 如果遇到无法解决的问题，写入 docs/workflow/<task-slug>/agent-issues/developer-A.json"
 })
 ```
 
-**每个任务的测试和样式验证循环：**
+**每个任务的测试、样式和控制台验证循环：**
 
 ```
 任务开始
@@ -1069,8 +1096,12 @@ Agent({
 │    ↓                         │
 ┌─ 样式OK？ ────否→ 修复样式 ──┤
 │    ↓是                        │
-│ 记录任务完成                  │
-└────────────────────────────────┘
+│ 控制台验证                   │
+│    ↓                         │
+┌─ 控制台零错误零警告？ ──否→ 修复代码 ──┐
+│    ↓是                                │
+│ 记录任务完成                          │
+└───────────────────────────────────────┘
   ↓
 进入下一个任务
 ```
@@ -1118,16 +1149,47 @@ test.describe('[Task-XXX] 任务名称', () => {
 
   test('交互状态', async ({ page }) => {
     await page.goto('/path/to/page');
-    
+
     const button = page.locator('.button');
-    
+
     // 验证 hover 状态
     await button.hover();
     await expect(button).toHaveCSS('background-color', /hover-color/);
-    
+
     // 验证 active 状态
     await button.click();
     await expect(button).toHaveCSS('transform', /scale/);
+  });
+
+  test('控制台零错误零警告', async ({ page }) => {
+    const consoleMessages = [];
+    page.on('console', msg => {
+      consoleMessages.push({ type: msg.type(), text: msg.text() });
+    });
+    page.on('pageerror', error => {
+      consoleMessages.push({ type: 'pageerror', text: error.message });
+    });
+
+    // 访问页面并执行核心操作
+    await page.goto('/path/to/page');
+    await page.click('.button');
+    // ... 执行该任务涉及的其他操作
+
+    // 等待异步操作完成
+    await page.waitForTimeout(2000);
+
+    // 过滤出自己代码产生的错误和警告（排除第三方库内部消息）
+    const errors = consoleMessages.filter(msg =>
+      (msg.type === 'error' || msg.type === 'pageerror') &&
+      !msg.text.includes('node_modules')
+    );
+    const warnings = consoleMessages.filter(msg =>
+      msg.type === 'warning' &&
+      !msg.text.includes('node_modules')
+    );
+
+    expect(errors).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 });
 ```
@@ -1164,6 +1226,13 @@ test.describe('[Task-XXX] 任务名称', () => {
     "issues_found": 0,
     "issues_fixed": 0,
     "screenshots": ["tests/screenshots/T-002/1.png"],
+    "passed": true
+  },
+  "console_validation": {
+    "errors": 0,
+    "warnings": 0,
+    "error_details": [],
+    "warning_details": [],
     "passed": true
   },
   "retry_count": 0,
@@ -1374,13 +1443,117 @@ for each agent:
 
 **为什么需要样式验证**：功能测试关注"功能是否正常"，但"看起来正常"同样重要。严重的样式问题会让用户对产品产生负面印象，甚至影响功能使用。样式验证在功能测试之前进行，可以避免因样式问题导致的误判（如按钮样式错误导致误以为点击功能失效）。
 
-### 6.5 开发纪律
+### 6.5 控制台验证（集成后全页面扫描）
+
+样式验证通过后，对项目所有核心页面进行一轮浏览器控制台全面扫描，确保集成后没有引入新的控制台错误和警告。
+
+虽然每个 Agent 在任务级已经做了控制台验证，但集成拼装后模块间的交互可能产生新的问题（如重复注册事件、共享状态不一致、路由切换时资源未释放等），因此需要一次全局扫描作为最终保障。
+
+#### 6.5.1 控制台验证执行流程
+
+1. **启动开发服务器**
+   ```bash
+   npm run dev
+   ```
+
+2. **使用 Playwright 逐页扫描** — 对每个核心页面执行以下操作：
+   ```javascript
+   // tests/console-scan.spec.ts
+   import { test, expect } from '@playwright/test';
+
+   const pages = [
+     { name: '首页', url: '/' },
+     { name: '登录页', url: '/login' },
+     // ... 所有核心页面
+   ];
+
+   for (const pageInfo of pages) {
+     test(`${pageInfo.name} 控制台验证`, async ({ page }) => {
+       const consoleMessages = [];
+       page.on('console', msg => {
+         consoleMessages.push({ type: msg.type(), text: msg.text() });
+       });
+       page.on('pageerror', error => {
+         consoleMessages.push({ type: 'pageerror', text: error.message });
+       });
+
+       await page.goto(pageInfo.url);
+
+       // 执行页面核心交互操作
+       // 根据页面功能，模拟用户关键操作路径
+
+       // 等待异步操作完成
+       await page.waitForTimeout(3000);
+
+       // 过滤掉第三方库内部消息
+       const ownErrors = consoleMessages.filter(msg =>
+         (msg.type === 'error' || msg.type === 'pageerror') &&
+         !msg.text.includes('node_modules')
+       );
+       const ownWarnings = consoleMessages.filter(msg =>
+         msg.type === 'warning' &&
+         !msg.text.includes('node_modules')
+       );
+
+       expect(ownErrors).toEqual([]);
+       expect(ownWarnings).toEqual([]);
+     });
+   }
+   ```
+
+3. **路由切换验证** — 在页面间切换时检查控制台：
+   - 从页面 A 导航到页面 B，检查是否有卸载时的错误
+   - 快速连续切换多个路由，检查是否有竞态条件导致的警告
+   - 浏览器后退/前进，检查路由状态恢复时的控制台输出
+
+4. **修复循环**
+   - 发现控制台错误或警告 → 定位来源 → 修复 → 重新扫描
+   - 循环直到所有页面零错误零警告
+
+#### 6.5.2 控制台验证输出
+
+完成后生成 `docs/workflow/<task-slug>/console-validation.md` + `console-validation.json`：
+
+```json
+{
+  "validation_date": "ISO-8601",
+  "pages_scanned": [
+    {
+      "page_name": "首页",
+      "url": "/",
+      "errors": [],
+      "warnings": [],
+      "passed": true
+    }
+  ],
+  "route_transitions_tested": [
+    { "from": "/login", "to": "/dashboard", "passed": true }
+  ],
+  "summary": {
+    "total_errors": 0,
+    "total_warnings": 0,
+    "pages_with_issues": 0,
+    "all_passed": true
+  }
+}
+```
+
+#### 6.5.3 验收标准
+
+控制台验证通过才能进入阶段7功能测试：
+- 所有核心页面零错误零警告（排除第三方库内部消息）
+- 路由切换无控制台错误
+- 控制台验证报告已生成
+
+**为什么需要全页面控制台扫描**：每个 Agent 独立开发时只验证自己负责的页面，但集成后模块间的交互会产生新的问题。例如：Agent A 的组件在卸载时未清理定时器，Agent B 的页面刚好复用了同一个 DOM 节点，导致 Agent B 的页面上出现 "Cannot read property of null" 错误。这类跨模块问题只有全页面扫描才能发现。
+
+### 6.6 开发纪律
 
 - 以测试用例为最终验收标准
 - 每个任务完成后立即更新任务分配表状态和时间
 - 状态流转：待办 → 进行中 → 完成
 
-### 6.6 编码原则
+### 6.7 编码原则
 
 开发过程中必须遵守以下四条编码原则，这些原则来自 Andrej Karpathy 的工程实践总结：
 
@@ -1454,16 +1627,23 @@ for each agent:
     "p2_issues": 0,
     "can_proceed": true
   },
+  "console_validation": {
+    "validated": true,
+    "total_errors": 0,
+    "total_warnings": 0,
+    "pages_scanned": 0,
+    "all_passed": true
+  },
   "output_files": [],
   "smoke_test_results": "passed",
   "next_phase": 7
 }
 ```
 
-2. **保存进度到 progress.md：** 追加阶段 6 完成记录，记录所有任务完成状态、集成拼装结果和样式验证结果。
+2. **保存进度到 progress.md：** 追加阶段 6 完成记录，记录所有任务完成状态、集成拼装结果、样式验证结果和控制台验证结果。
 
 3. **保存到 memory：**
-创建 `memory/<task-slug>-phase-6-completed.md`，记录开发完成情况、关键代码决策和样式验证摘要。
+创建 `memory/<task-slug>-phase-6-completed.md`，记录开发完成情况、关键代码决策、样式验证摘要和控制台验证摘要。
 
 4. **输出续接指令：**
 ```
@@ -1471,6 +1651,7 @@ for each agent:
 阶段 6 已完成：开发执行
 所有开发任务已完成，集成拼装通过，冒烟测试通过
 样式验证：P0问题0个，P1问题0个，P2问题0个
+控制台验证：错误0个，警告0个，全部页面通过
 下一阶段：阶段 7 - 功能测试（测试工程师视角）
 [/CLEAR_AND_CONTINUE]
 ```
@@ -2005,10 +2186,12 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
 21. **样式验证必做** — 阶段6完成后必须进行样式验证，检查布局、对齐、间距、颜色、字体、交互状态，P0问题必须修复后才能进入功能测试
 22. **样式分级处理** — 样式问题按严重程度分级（P0严重/P1中等/P2轻微），P0阻塞测试，P1/P2记录为待优化项不阻塞
 23. **设计稿对照** — 样式验证必须对照 docs/workflow/<task-slug>/design-specs/ 中的设计稿，确保实现与设计一致
-24. **原始需求不可改** — 阶段0保存的原始需求（docs/workflow/<task-slug>/original-request.md）一经保存绝不允许修改，作为阶段9验证的唯一依据
-25. **验证必做** — 阶段8完成后必须进入阶段9进行产品经理Agent的最终验证，只有验证通过才算真正完成
-26. **验证不过必重启** — 阶段9验证未通过时，必须输出 `[RESTART_WORKFLOW]` 指令，从阶段1重新梳理需求
-27. **重启限三次** — 最多允许重启3次，超过后停止自动重启，请求用户决策（接受/调整/人工介入）
-28. **验证对照原始** — 阶段9验证必须对照阶段0保存的原始需求，不是对照PRD或设计稿
-29. **重启必看报告** — 重启时必须读取上次验证报告（docs/workflow/<task-slug>/final-validation-report.md），重点关注未通过的原因
-30. **最终才算完成** — 只有阶段9验证通过并输出 `[WORKFLOW_COMPLETE]` 后，工作流才算真正完成
+24. **控制台零容忍** — 每个 Agent 完成任务后必须验证浏览器控制台零错误零警告（排除第三方库内部消息），发现错误或警告必须修复后才能继续下一个任务
+25. **集成后控制台必扫** — 阶段6.5必须对全部核心页面进行控制台全页面扫描，包括路由切换验证，零错误零警告才能进入阶段7
+26. **原始需求不可改** — 阶段0保存的原始需求（docs/workflow/<task-slug>/original-request.md）一经保存绝不允许修改，作为阶段9验证的唯一依据
+27. **验证必做** — 阶段8完成后必须进入阶段9进行产品经理Agent的最终验证，只有验证通过才算真正完成
+28. **验证不过必重启** — 阶段9验证未通过时，必须输出 `[RESTART_WORKFLOW]` 指令，从阶段1重新梳理需求
+29. **重启限三次** — 最多允许重启3次，超过后停止自动重启，请求用户决策（接受/调整/人工介入）
+30. **验证对照原始** — 阶段9验证必须对照阶段0保存的原始需求，不是对照PRD或设计稿
+31. **重启必看报告** — 重启时必须读取上次验证报告（docs/workflow/<task-slug>/final-validation-report.md），重点关注未通过的原因
+32. **最终才算完成** — 只有阶段9验证通过并输出 `[WORKFLOW_COMPLETE]` 后，工作流才算真正完成
