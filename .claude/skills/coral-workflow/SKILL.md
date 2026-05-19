@@ -51,7 +51,7 @@ description: |
 2. 生成任务 slug 并创建 `docs/workflow/<task-slug>/` 目录结构
 3. 初始化空的 `progress.json` 和 `progress.md`
 
-### 自动续接机制（核心 — CronCreate 调度）
+### 自动续接机制（核心 — CronCreate 调度 + /clear 清空上下文）
 
 **为什么需要清空上下文**：整个工作流跨越10个阶段，单次会话上下文会不断膨胀。清空上下文后每个阶段从文件恢复状态，确保：
 - 上下文窗口不被前序阶段占用，每个阶段有充足空间
@@ -65,32 +65,39 @@ description: |
    - `docs/workflow/<task-slug>/progress.md`（人类可读）
    - `memory/<task-slug>-phase-{N}-completed.md`（关键决策索引）
 
-2. **输出过渡信息** — 告知用户当前阶段已完成，下一阶段将自动开始：
+2. **输出过渡信息 + 提示清空上下文** — 告知用户当前阶段已完成，提示输入 /clear：
    ```
    ─────────────────────
    阶段 [N] 已完成：[阶段名称]
    [关键产出摘要]
    → 阶段 [N+1]：[阶段名称] 将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
+   💡 请输入 /clear 清空上下文，下一阶段会自动触发
    ─────────────────────
    ```
 
-3. **创建 CronCreate 定时任务** — 调度下一阶段自动执行：
+3. **创建 CronCreate 定时任务（durable: true）** — 调度下一阶段自动执行。使用 durable: true 确保定时任务在 /clear 后仍然存活：
 
    **步骤 3a：获取1分钟后的时间（cron 格式）**
    ```bash
    date -d '+1 minute' '+%M %H %d %m' 2>/dev/null || python -c "from datetime import datetime,timedelta;t=datetime.now()+timedelta(minutes=1);print(t.strftime('%M %H %d %m'))"
    ```
 
-   **步骤 3b：使用获取的时间创建一次性 CronCreate**
+   **步骤 3b：使用获取的时间创建一次性 CronCreate（必须 durable: true）**
    ```
    CronCreate({
      cron: "[minute] [hour] [day] [month] *",
      recurring: false,
+     durable: true,
      prompt: "继续执行工作流。读取 docs/workflow/ 下的进度文件，使用 /coral-workflow 技能从上次完成的阶段继续执行。"
    })
    ```
 
-4. **结束当前回合** — 创建 CronCreate 后，不要再执行任何操作，让当前回合自然结束。下一阶段将由定时任务自动触发，技能从文件读取上下文继续执行。
+4. **结束当前回合** — 创建 CronCreate 后，不要再执行任何操作，让当前回合自然结束。
+
+**用户的操作**：每个阶段完成后，只需输入 `/clear` 即可。durable 定时任务会在 /clear 后自动触发下一阶段，不需要再输入任何指令。
+
+**为什么必须 durable: true**：`/clear` 会清空会话上下文，session-only 的 CronCreate 任务会随之消失。durable: true 将任务持久化到 `.claude/scheduled_tasks.json`，即使 /clear 后也能存活并自动触发。
 
 ### 工作流重启机制
 
@@ -98,11 +105,12 @@ description: |
 
 1. **保存验证结果和重启信息** — 更新 progress.json 和 restart-history.md
 
-2. **创建 CronCreate 定时任务** — 与正常阶段过渡相同的流程，但 prompt 指向从阶段1重新开始：
+2. **创建 CronCreate 定时任务（durable: true）** — 与正常阶段过渡相同的流程，但 prompt 指向从阶段1重新开始：
    ```
    CronCreate({
      cron: "[minute] [hour] [day] [month] *",
      recurring: false,
+     durable: true,
      prompt: "工作流验证未通过，需要重启。读取 docs/workflow/ 下的进度文件和验证报告，使用 /coral-workflow 技能从阶段1重新梳理需求。重点关注验证报告中的问题。"
    })
    ```
@@ -111,28 +119,38 @@ description: |
 
 4. **重启记录** — 每次重启时更新 `docs/workflow/<task-slug>/restart-history.md`
 
-### 整体流转（自动续接，无需手动操作）
+### 整体流转（/clear + CronCreate 自动续接）
 
-整个工作流通过 CronCreate 定时任务实现阶段间的自动续接：
+每个阶段完成后的操作流程：
 
 ```
-阶段0完成 → 保存状态 → CronCreate → ~1分钟后自动触发 → 阶段1
+阶段N完成
   ↓
-阶段1完成 → 保存状态 → CronCreate → ~1分钟后自动触发 → 阶段2
+保存状态到文件
   ↓
-... 每个阶段完成后自动调度下一阶段
+创建 CronCreate (durable: true, ~1分钟后触发)
   ↓
-阶段9验证通过 → [WORKFLOW_COMPLETE] 工作流完成（不创建 CronCreate）
+输出过渡信息 + 提示 "请输入 /clear"
   ↓
-阶段9验证未通过 → 保存验证报告 → CronCreate → 自动从阶段1重新开始
+用户输入 /clear → 上下文清空
+  ↓
+CronCreate 定时触发 → /coral-workflow 自动执行
+  ↓
+技能从文件读取上下文 → 开始阶段N+1
+  ↓
+... 重复直到阶段9验证通过
 ```
 
-**用户需要介入的时机**（工作流本身的问答，非系统中断）：
+**用户每阶段只需做一件事：输入 `/clear`。** 后续的技能触发和阶段执行全部自动完成。
+
+**用户需要额外介入的时机**（工作流本身的问答，非系统中断）：
 - 阶段1需求澄清时的问答
 - 阶段2设计偏好调研和方案选定
 - 阶段3疑问确认
 - 阶段3技术方案选型
 - 重启达到上限时的用户决策
+
+**如果忘记输入 /clear**：CronCreate 仍会自动触发，但旧上下文未清空，下一阶段在已有上下文中执行。不影响功能，但上下文不会清空。
 
 **如果 CronCreate 定时任务未能触发**（如会话意外关闭）：
 - 进度文件已保存，不会丢失
@@ -377,6 +395,7 @@ docs/workflow/
 项目模式：[模式A/模式B]
 原始需求已保存到 docs/workflow/<task-slug>/original-request.md
 → 阶段 1：需求分析（产品经理视角）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段1执行。
@@ -443,6 +462,7 @@ docs/workflow/
 阶段 1 已完成：需求分析（产品经理视角）
 产出：PRD + 原型
 → 阶段 2：UI/UX设计（设计师视角）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段2执行。
@@ -640,6 +660,7 @@ docs/workflow/<task-slug>/design-specs/
 阶段 2 已完成：UI/UX设计（设计师视角）
 设计决策：[用户选定的方案]
 → 阶段 3：逻辑梳理与技术方案（架构师视角）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段3执行。
@@ -761,6 +782,7 @@ sequenceDiagram
 阶段 3 已完成：逻辑梳理与技术方案（架构师视角）
 集成契约已定义，技术方案已确认
 → 阶段 4：测试用例编写（测试视角）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段4执行。
@@ -854,6 +876,7 @@ sequenceDiagram
 阶段 4 已完成：测试用例编写（测试视角）
 用例统计：功能[X]条、集成[X]条、端到端[X]条
 → 阶段 5：任务拆分与分配（项目经理视角）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段5执行。
@@ -938,6 +961,7 @@ sequenceDiagram
 阶段 5 已完成：任务拆分与分配（项目经理视角）
 任务拆分完成（共[X]个任务）
 → 阶段 6：开发执行（交接 coral-frontend）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段6执行。
@@ -1682,6 +1706,7 @@ for each agent:
 样式验证：P0问题0个，P1问题0个，P2问题0个
 控制台验证：错误0个，警告0个，全部页面通过
 → 阶段 7：功能测试（测试工程师视角）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段7执行。
@@ -1761,6 +1786,7 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
 阶段 7 已完成：功能测试（测试工程师视角）
 测试结果：通过[X]条、失败[X]条，所有 Bug 已修复
 → 阶段 8：回归测试与交付（项目经理视角）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段8执行。
@@ -1822,6 +1848,7 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
 阶段 8 已完成：回归测试与交付
 回归测试全部通过
 → 阶段 9：最终验证（产品经理Agent）将在约1分钟后自动开始
+💡 请输入 /clear 清空上下文
 ─────────────────────
 ```
 按照「自动续接机制」创建 CronCreate 定时任务，调度阶段9执行。
@@ -1972,15 +1999,16 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
    }
    ```
 
-3. **创建 CronCreate 定时任务重启** — 输出过渡信息，然后创建 CronCreate 调度从阶段1重新开始：
+3. **创建 CronCreate 定时任务重启（durable: true）** — 输出过渡信息，然后创建 CronCreate 调度从阶段1重新开始：
    ```
    ─────────────────────
    阶段 9 验证未通过
    原因：[验证未通过的具体原因]
    → 将在约1分钟后自动重启，从阶段 1 重新梳理需求（第 [N] 次重启）
+   💡 请输入 /clear 清空上下文
    ─────────────────────
    ```
-   按照工作流重启机制创建 CronCreate 定时任务，调度从阶段1重新执行。
+   按照工作流重启机制创建 CronCreate 定时任务（durable: true），调度从阶段1重新执行。
 
 4. **重启后的执行**
    - 阶段1-8重新执行，但结合原始需求和验证报告
@@ -2047,7 +2075,7 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
 
 ### 阶段完成检查点机制
 
-**核心原则**：每个阶段完成后保存进度到文件，通过 CronCreate 定时任务自动触发下一阶段。每个阶段从文件读取上下文，实现"清空上下文 + 自动续接"的效果。
+**核心原则**：每个阶段完成后保存进度到文件，通过 CronCreate（durable: true）定时任务自动触发下一阶段。用户输入 /clear 清空上下文后，CronCreate 自动触发技能从文件恢复状态继续执行。
 
 **检查点操作四步骤（技能执行）：**
 
@@ -2064,11 +2092,11 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
    - 包含：该阶段的关键决策、重要输出、待处理事项
    - 防止 progress 文件遗漏时丢失关键上下文
 
-4. **创建 CronCreate 定时任务调度下一阶段**
-   - 输出阶段过渡信息
+4. **创建 CronCreate 定时任务调度下一阶段（durable: true）**
+   - 输出阶段过渡信息 + 提示用户输入 /clear
    - 使用 Bash 获取1分钟后的时间
-   - 创建一次性 CronCreate 定时任务
-   - 结束当前回合，等待定时任务自动触发下一阶段
+   - 创建一次性 CronCreate 定时任务（durable: true，确保 /clear 后仍存活）
+   - 结束当前回合
 
 ### 双保险机制
 
@@ -2096,7 +2124,7 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
 
 ### 恢复流程
 
-当技能重新触发且检测到 `docs/workflow/<task-slug>/progress.json` 存在时，说明之前的工作流因 CronCreate 定时触发或用户手动触发而续接：
+当技能被 CronCreate 定时任务触发或用户手动触发，且检测到 `docs/workflow/<task-slug>/progress.json` 存在时，说明之前的工作流需要续接：
 
 #### 场景A：正常续接（current_phase < 9）
 
@@ -2201,7 +2229,7 @@ Bug 记录保存到 `docs/workflow/<task-slug>/bugs.md` + `docs/workflow/<task-s
 13. **简单至上** — 只写要求的，不预留灵活性，不为单次使用做抽象，能短则短
 14. **手术式修改** — 只改必须改的，不顺手重构相邻代码，风格与周围保持一致
 15. **目标驱动** — 每个任务必须转化为可验证目标，验证通过才算完成
-16. **CronCreate 自动续接** — 每个阶段完成后保存进度，通过 CronCreate 定时任务调度下一阶段自动执行，无需用户手动操作。创建 CronCreate 后立即结束当前回合
+16. **CronCreate + /clear 自动续接** — 每个阶段完成后保存进度，创建 CronCreate（durable: true）定时任务调度下一阶段，提示用户输入 /clear 清空上下文。/clear 后 CronCreate 自动触发技能继续执行
 17. **Agent 独立 session** — 每个 Agent 是独立 session，上下文窗口独立，只能通过文件系统传递信息，启动前必须准备完整的上下文文件
 18. **Agent 心跳必启** — 每个 Agent 启动时必须开启心跳机制，每5分钟更新心跳文件，超时未更新判定为卡死
 19. **Agent 超时重试** — Agent 卡死后自动重试1次，重试仍失败则标记为 failed 并通知用户
